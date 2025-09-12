@@ -1,0 +1,64 @@
+name: Security Audit
+
+on:
+  schedule:
+    # Run security audit daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'pyproject.toml'
+      - 'uv.lock'
+
+jobs:
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v2
+
+    - name: Install dependencies
+      run: uv sync
+
+    - name: Run safety check
+      run: |
+        uv add --dev safety
+        uv run safety check --json --output safety-report.json || true
+
+    - name: Run bandit security scan
+      run: |
+        uv add --dev bandit
+        uv run bandit -r newsbot/ -f json -o bandit-report.json || true
+
+    - name: Upload security reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-reports
+        path: |
+          safety-report.json
+          bandit-report.json
+
+    - name: Create security issue on failure
+      if: failure()
+      uses: actions/github-script@v6
+      with:
+        script: |
+          github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: 'Security vulnerabilities detected',
+            body: 'Automated security scan detected vulnerabilities. Please check the latest workflow run.',
+            labels: ['security', 'bug', 'high-priority']
+          })

@@ -1,0 +1,38 @@
+# Base image for NewsBot services
+FROM python:3.11-slim as base
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN pip install uv
+
+# Set work directory
+WORKDIR /app
+
+# Copy dependency files
+COPY pyproject.toml ./
+
+# Install dependencies
+RUN uv sync --frozen
+
+# Create non-root user
+RUN useradd --create-home --shell /bin/bash newsbot
+USER newsbot
+
+# Copy source code
+COPY --chown=newsbot:newsbot . .
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:${SERVICE_PORT:-8000}/healthz || exit 1

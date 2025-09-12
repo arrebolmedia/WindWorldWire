@@ -1,0 +1,137 @@
+# Content policies and domain-specific settings
+
+# Domain-specific policies
+domains:
+  reuters.com: { image: mixed,  rehost_allowed: true,  respect_robots: true }
+  apnews.com:  { image: mixed,  rehost_allowed: true }
+  elpais.com:  { image: hotlink, rehost_allowed: false }
+  bbc.com:     { image: hotlink, rehost_allowed: false }
+
+# Default policies for all domains
+defaults:
+  image: mixed
+  min_width: 800
+  max_download_mb: 2.5
+  credit_label: "Cortesía de"
+      localization_priority: "mexican_context"
+      
+    translation:
+      source_languages: ["en", "pt"]
+      target_language: "es-MX"
+      preserve_financial_terms: true
+      regional_adaptation: true
+      
+    trending:
+      minimum_sources: 3
+      time_window_hours: 24
+      engagement_threshold: 100
+      
+  # Quality Standards
+  quality:
+    content_standards:
+      minimum_word_count: 150
+      maximum_word_count: 3000
+      required_elements:
+        - "headline"
+        - "summary"
+        - "main_content"
+        - "source_attribution"
+      
+    fact_checking:
+      verify_financial_data: true
+      cross_reference_sources: true
+      flag_unverified_claims: true
+      require_official_sources: true
+      
+    image_standards:
+      minimum_resolution: "800x600"
+      accepted_formats: ["jpg", "png", "webp"]
+      require_alt_text: true
+      copyright_compliance: true
+
+  # Publishing Guidelines
+  publishing:
+    schedule:
+      business_hours: "06:00-22:00"
+      timezone: "America/Mexico_City"
+      peak_engagement: ["08:00-10:00", "13:00-15:00", "18:00-20:00"]
+      
+    frequency_limits:
+      max_daily_articles: 50
+      max_hourly_articles: 8
+      min_interval_minutes: 15
+      
+    platform_specific:
+      website:
+        seo_optimization: true
+        meta_descriptions: true
+        structured_data: true
+        
+      social_media:
+        twitter_max_length: 280
+        linkedin_business_tone: true
+        facebook_engagement_focus: true
+        
+      newsletter:
+        weekly_digest: true
+        breaking_news_alerts: true
+        personalization: true
+
+  # Compliance and Legal
+  compliance:
+    regulatory:
+      cnbv_guidelines: true
+      bmv_reporting_standards: true
+      financial_disclosure_rules: true
+      
+    copyright:
+      fair_use_policy: true
+      attribution_required: true
+      image_licensing: true
+      
+    privacy:
+      gdpr_compliance: true
+      data_retention_policy: "365_days"
+      user_consent_required: true
+
+  # Moderation Rules
+  moderation:
+    automated_checks:
+      - "financial_misinformation"
+      - "market_manipulation"
+      - "copyright_violation"
+      - "factual_accuracy"
+      
+    human_review_triggers:
+      - "controversial_topics"
+      - "major_financial_news"
+      - "government_policy_changes"
+      - "corporate_scandals"
+      
+    escalation_procedures:
+      level_1: "automated_flagging"
+      level_2: "editor_review"
+      level_3: "legal_review"
+      level_4: "content_removal"
+
+  # SEO and Discoverability
+  seo:
+    keywords:
+      primary_focus: "noticias_financieras_mexico"
+      secondary_terms: 
+        - "economia_mexicana"
+        - "mercados_financieros"
+        - "negocios_mexico"
+        - "empresas_mexicanas"
+        
+    content_optimization:
+      title_length: "50-60_characters"
+      meta_description_length: "150-160_characters"
+      heading_structure: "h1_h2_h3_hierarchy"
+      internal_linking: true
+      
+    structured_data:
+      article_schema: true
+      news_article_schema: true
+      organization_schema: true
+      breadcrumb_schema: true

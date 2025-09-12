@@ -1,0 +1,159 @@
+# Topics configuration for content processing
+
+# Default settings for all topics
+defaults:
+  lang: [es, en]
+  cadence: hourly
+  max_posts_per_run: 1
+  min_words: 180
+  image_strategy: mixed
+  credit_label: "Cortesía de"
+
+# Topic definitions
+topics:
+  - key: taiwan_seguridad
+    name: "Taiwán y seguridad regional"
+    priority: 0.9
+    cadence: hourly
+    queries:
+      - '"Taiwan" OR "Taipei" OR "Taipéi"'
+      - '"Taiwan Strait" OR (Estrecho NEAR/3 Taiwan)'
+      - 'China AND (drills OR incursión OR ADIZ)'
+    allow_domains: ["reuters.com","apnews.com","bbc.com","aljazeera.com"]
+    tags: ["Asia","Defensa","China","Taiwán"]
+
+  - name: "Empresas y Negocios"
+    slug: "empresas-negocios"
+    description: "Noticias corporativas, fusiones, adquisiciones y estrategia empresarial"
+    keywords:
+      - "corporativos"
+      - "CEO"
+      - "fusiones"
+      - "adquisiciones"
+      - "earnings"
+      - "resultados trimestrales"
+    parent: null
+
+  # Technology and Innovation
+  - name: "Tecnología y Fintech"
+    slug: "tecnologia-fintech"
+    description: "Innovación tecnológica, fintech y transformación digital en México"
+    keywords:
+      - "fintech"
+      - "blockchain"
+      - "criptomonedas"
+      - "inteligencia artificial"
+      - "startups tecnológicas"
+      - "banca digital"
+    parent: null
+
+  # Industry Sectors
+  - name: "Energía y Petróleo"
+    slug: "energia-petroleo"
+    description: "Sector energético, PEMEX, energías renovables y política energética"
+    keywords:
+      - "PEMEX"
+      - "petróleo"
+      - "gas natural"
+      - "energías renovables"
+      - "CFE"
+      - "reforma energética"
+    parent: null
+
+  - name: "Banca y Seguros"
+    slug: "banca-seguros"
+    description: "Sistema bancario mexicano, seguros y servicios financieros"
+    keywords:
+      - "bancos"
+      - "BBVA"
+      - "Santander"
+      - "Banorte"
+      - "crédito"
+      - "seguros"
+      - "CNBV"
+    parent: null
+
+  - name: "Retail y Consumo"
+    slug: "retail-consumo"
+    description: "Sector retail, comercio electrónico y tendencias de consumo"
+    keywords:
+      - "retail"
+      - "e-commerce"
+      - "consumo"
+      - "ANTAD"
+      - "centros comerciales"
+      - "marcas"
+    parent: null
+
+  # Real Estate and Construction
+  - name: "Inmobiliario y Construcción"
+    slug: "inmobiliario-construccion"
+    description: "Mercado inmobiliario, desarrollo urbano y sector constructor"
+    keywords:
+      - "inmobiliario"
+      - "vivienda"
+      - "construcción"
+      - "desarrolladoras"
+      - "INFONAVIT"
+      - "urbanismo"
+    parent: null
+
+  # Government and Regulation
+  - name: "Política Económica"
+    slug: "politica-economica"
+    description: "Políticas gubernamentales que impactan la economía y los negocios"
+    keywords:
+      - "SHCP"
+      - "presupuesto"
+      - "regulación"
+      - "comercio exterior"
+      - "T-MEC"
+      - "política fiscal"
+    parent: null
+
+  # International Markets
+  - name: "Mercados Internacionales"
+    slug: "mercados-internacionales"
+    description: "Mercados globales, comercio internacional y economía mundial"
+    keywords:
+      - "Wall Street"
+      - "Fed"
+      - "comercio internacional"
+      - "aranceles"
+      - "exportaciones"
+      - "nearshoring"
+    parent: null
+
+  # Special Focus Areas
+  - name: "Emprendimiento"
+    slug: "emprendimiento"
+    description: "Startups, emprendedores mexicanos y ecosistema de innovación"
+    keywords:
+      - "startups"
+      - "emprendedores"
+      - "venture capital"
+      - "aceleradoras"
+      - "ecosistema startup"
+    parent: "tecnologia-fintech"
+
+  - name: "Sostenibilidad"
+    slug: "sostenibilidad"
+    description: "ESG, sustentabilidad corporativa y economía verde"
+    keywords:
+      - "ESG"
+      - "sustentabilidad"
+      - "economía circular"
+      - "cambio climático"
+      - "bonos verdes"
+    parent: null
+
+  - name: "Análisis y Opinión"
+    slug: "analisis-opinion"
+    description: "Análisis económico, opiniones de expertos y columnistas especializados"
+    keywords:
+      - "análisis"
+      - "opinión"
+      - "columna"
+      - "expertos"
+      - "perspectivas"
+    parent: null

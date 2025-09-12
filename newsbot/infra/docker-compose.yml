@@ -1,0 +1,196 @@
+version: '3.8'
+
+services:
+  # Infrastructure Services
+  postgres:
+    image: postgres:15-alpine
+    container_name: newsbot-postgres
+    environment:
+      POSTGRES_DB: news
+      POSTGRES_USER: news
+      POSTGRES_PASSWORD: news
+      TZ: America/Mexico_City
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - newsbot-network
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    container_name: newsbot-redis
+    command: redis-server --appendonly yes
+    environment:
+      TZ: America/Mexico_City
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - newsbot-network
+    restart: always
+
+  opensearch:
+    image: opensearchproject/opensearch:2.12.0
+    container_name: newsbot-opensearch
+    environment:
+      - discovery.type=single-node
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - DISABLE_SECURITY_PLUGIN=true
+      - TZ=America/Mexico_City
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    networks:
+      - newsbot-network
+    restart: always
+
+  temporal:
+    image: temporalio/auto-setup:1.22.0
+    container_name: newsbot-temporal
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=news
+      - POSTGRES_PWD=news
+      - POSTGRES_SEEDS=postgres
+      - TZ=America/Mexico_City
+    ports:
+      - "7233:7233"
+    networks:
+      - newsbot-network
+    depends_on:
+      - postgres
+    restart: always
+
+  temporal-ui:
+    image: temporalio/ui:2.21.3
+    container_name: newsbot-temporal-ui
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TZ=America/Mexico_City
+    ports:
+      - "8080:8080"
+    networks:
+      - newsbot-network
+    depends_on:
+      - temporal
+    restart: always
+
+  # NewsBot Services
+  ingestor:
+    build:
+      context: ../newsbot/ingestor
+      dockerfile: Dockerfile
+    container_name: newsbot-ingestor
+    env_file:
+      - ../.env
+    volumes:
+      - ../config:/app/config:ro
+    networks:
+      - newsbot-network
+    depends_on:
+      - postgres
+      - redis
+      - opensearch
+    restart: always
+
+  trender:
+    build:
+      context: ../newsbot/trender
+      dockerfile: Dockerfile
+    container_name: newsbot-trender
+    env_file:
+      - ../.env
+    volumes:
+      - ../config:/app/config:ro
+    networks:
+      - newsbot-network
+    depends_on:
+      - postgres
+      - redis
+      - opensearch
+    restart: always
+
+  rewriter:
+    build:
+      context: ../newsbot/rewriter
+      dockerfile: Dockerfile
+    container_name: newsbot-rewriter
+    env_file:
+      - ../.env
+    volumes:
+      - ../config:/app/config:ro
+    networks:
+      - newsbot-network
+    depends_on:
+      - postgres
+      - redis
+      - opensearch
+    restart: always
+
+  mediaer:
+    build:
+      context: ../newsbot/mediaer
+      dockerfile: Dockerfile
+    container_name: newsbot-mediaer
+    env_file:
+      - ../.env
+    volumes:
+      - ../config:/app/config:ro
+    networks:
+      - newsbot-network
+    depends_on:
+      - postgres
+      - redis
+      - opensearch
+    restart: always
+
+  publisher:
+    build:
+      context: ../newsbot/publisher
+      dockerfile: Dockerfile
+    container_name: newsbot-publisher
+    env_file:
+      - ../.env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../config:/app/config:ro
+    networks:
+      - newsbot-network
+    depends_on:
+      - postgres
+      - redis
+      - opensearch
+    restart: always
+
+  watchdog:
+    build:
+      context: ../newsbot/watchdog
+      dockerfile: Dockerfile
+    container_name: newsbot-watchdog
+    env_file:
+      - ../.env
+    volumes:
+      - ../config:/app/config:ro
+    networks:
+      - newsbot-network
+    depends_on:
+      - postgres
+      - redis
+      - opensearch
+    restart: always
+
+networks:
+  newsbot-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  opensearch_data:

@@ -1,0 +1,308 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "newsbot"
+version = "0.1.0"
+description = "WindWorldWire NewsBot - Automated News Processing System"
+readme = "README.md"
+authors = [
+    {name = "WindWorldWire", email = "tech@windworldwire.com"},
+]
+keywords = ["news", "automation", "fastapi", "nlp"]
+requires-python = ">=3.11"
+dependencies = [
+    # Web Framework
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    
+    # Configuration
+    "pydantic>=2.5.0",
+    "python-dotenv>=1.0.0",
+    
+    # Database
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.29.0",
+    
+    # HTTP Client
+    "httpx>=0.25.0",
+    
+    # Cache
+    "redis>=5.0.0",
+    
+    # Search
+    "opensearch-py>=2.4.0",
+    
+    # Text Processing
+    "beautifulsoup4>=4.12.0",
+    "lxml>=4.9.0",
+    "trafilatura>=1.6.0",
+    "readability-lxml>=0.8.0",
+    
+    # Monitoring
+    "prometheus-client>=0.19.0",
+    
+    # JSON Logging
+    "python-json-logger>=2.0.0",
+]
+
+[project.optional-dependencies]
+ml = [
+    # Machine Learning (optional)
+    "sentence-transformers>=2.2.0",
+]
+
+dev = [
+    # Testing
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    
+    # Linting
+    "ruff>=0.1.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "ruff>=0.1.0",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+select = ["E", "F", "W", "C90", "I", "N", "UP", "YTT", "S", "BLE", "FBT", "B", "A", "COM", "C4", "DTZ", "T10", "EM", "EXE", "ISC", "ICN", "G", "INP", "PIE", "T20", "PT", "Q", "RSE", "RET", "SLF", "SIM", "TID", "TCH", "ARG", "PTH", "ERA", "PGH", "PL", "TRY", "NPY", "RUF"]
+ignore = [
+    "S101",    # assert
+    "S311",    # random
+    "COM812",  # trailing comma
+    "ISC001",  # single line implicit string concatenation
+]
+
+[tool.ruff.per-file-ignores]
+"tests/*" = ["S101", "PLR2004", "ARG001"]
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers --disable-warnings"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+]
+    "pytest-mock>=3.12.0",
+    "httpx>=0.25.0",  # for testing FastAPI
+    "factory-boy>=3.3.0",
+    
+    # Code Quality
+    "ruff>=0.1.6",
+    "black>=23.11.0",
+    "mypy>=1.7.0",
+    "pre-commit>=3.5.0",
+    
+    # Documentation
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.4.0",
+    "mkdocstrings[python]>=0.24.0",
+    
+    # Development Tools
+    "ipython>=8.17.0",
+    "jupyter>=1.0.0",
+    "watchdog>=3.0.0",
+]
+
+production = [
+    "gunicorn>=21.2.0",
+    "uvicorn[standard]>=0.24.0",
+]
+
+all = ["newsbot[dev,production]"]
+
+[project.urls]
+Homepage = "https://github.com/windworldwire/newsbot"
+Repository = "https://github.com/windworldwire/newsbot"
+Documentation = "https://windworldwire.github.io/newsbot"
+"Bug Tracker" = "https://github.com/windworldwire/newsbot/issues"
+
+[project.scripts]
+newsbot = "newsbot.cli:main"
+newsbot-ingestor = "newsbot.services.ingestor.main:main"
+newsbot-trender = "newsbot.services.trender.main:main"
+newsbot-rewriter = "newsbot.services.rewriter.main:main"
+newsbot-mediaer = "newsbot.services.mediaer.main:main"
+newsbot-publisher = "newsbot.services.publisher.main:main"
+newsbot-watchdog = "newsbot.services.watchdog.main:main"
+
+# Hatchling configuration
+[tool.hatch.build.targets.wheel]
+packages = ["newsbot"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "newsbot/",
+    "config/",
+    "scripts/",
+    "tests/",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]
+
+# UV configuration
+[tool.uv]
+dev-dependencies = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+    "httpx>=0.25.0",
+    "factory-boy>=3.3.0",
+    "ruff>=0.1.6",
+    "black>=23.11.0",
+    "mypy>=1.7.0",
+    "pre-commit>=3.5.0",
+]
+
+# Ruff configuration
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "ARG", # flake8-unused-arguments
+    "SIM", # flake8-simplify
+    "TCH", # flake8-type-checking
+]
+ignore = [
+    "E501",  # line too long, handled by black
+    "B008",  # do not perform function calls in argument defaults
+    "B904",  # raise ... from e or raise ... from None
+]
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    ".eggs",
+    "*.egg-info",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+]
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"]  # allow unused imports in __init__.py
+"tests/**/*" = ["ARG", "S101"]  # allow unused args and assert in tests
+
+[tool.ruff.isort]
+known-first-party = ["newsbot"]
+force-sort-within-sections = true
+split-on-trailing-comma = true
+
+# Black configuration
+[tool.black]
+target-version = ["py311"]
+line-length = 88
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+# MyPy configuration
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+extra_checks = true
+
+# Per-module options
+[[tool.mypy.overrides]]
+module = [
+    "newspaper.*",
+    "feedparser.*",
+    "temporalio.*",
+    "opensearch_py.*",
+    "cv2.*",
+]
+ignore_missing_imports = true
+
+# Pytest configuration
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--cov=newsbot",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-report=xml",
+    "--cov-fail-under=80",
+]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+filterwarnings = [
+    "error",
+    "ignore::UserWarning",
+    "ignore::DeprecationWarning",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "e2e: marks tests as end-to-end tests",
+]
+
+# Coverage configuration
+[tool.coverage.run]
+source = ["newsbot"]
+omit = [
+    "*/tests/*",
+    "*/migrations/*",
+    "*/__init__.py",
+    "*/settings/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]

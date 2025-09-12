@@ -1,0 +1,332 @@
+version: '3.8'
+
+services:
+  # Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: newsbot-postgres
+    environment:
+      POSTGRES_DB: newsbot
+      POSTGRES_USER: newsbot
+      POSTGRES_PASSWORD: newsbot
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=es_MX.UTF-8 --lc-ctype=es_MX.UTF-8"
+      TZ: America/Mexico_City
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - newsbot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U newsbot -d newsbot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Cache and Message Broker
+  redis:
+    image: redis:7-alpine
+    container_name: newsbot-redis
+    command: redis-server --appendonly yes --requirepass newsbot
+    environment:
+      TZ: America/Mexico_City
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - newsbot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Temporal Workflow Engine
+  temporal:
+    image: temporalio/auto-setup:1.22.0
+    container_name: newsbot-temporal
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=newsbot
+      - POSTGRES_PWD=newsbot
+      - POSTGRES_SEEDS=postgres
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+      - ENABLE_ES=true
+      - ES_SEEDS=opensearch
+      - ES_VERSION=v7
+      - TZ=America/Mexico_City
+    ports:
+      - "7233:7233"
+    volumes:
+      - ./config/temporal:/etc/temporal/config/dynamicconfig
+    networks:
+      - newsbot-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Temporal Web UI
+  temporal-ui:
+    image: temporalio/ui:2.21.0
+    container_name: newsbot-temporal-ui
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:8080
+      - TZ=America/Mexico_City
+    ports:
+      - "8080:8080"
+    networks:
+      - newsbot-network
+    depends_on:
+      - temporal
+    restart: unless-stopped
+
+  # Search Engine
+  opensearch:
+    image: opensearchproject/opensearch:2.11.0
+    container_name: newsbot-opensearch
+    environment:
+      - cluster.name=newsbot-cluster
+      - node.name=newsbot-node
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+      - "DISABLE_INSTALL_DEMO_CONFIG=true"
+      - "DISABLE_SECURITY_PLUGIN=true"
+      - TZ=America/Mexico_City
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    networks:
+      - newsbot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # OpenSearch Dashboards
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.11.0
+    container_name: newsbot-opensearch-dashboards
+    environment:
+      - 'OPENSEARCH_HOSTS=["http://opensearch:9200"]'
+      - "DISABLE_SECURITY_DASHBOARDS_PLUGIN=true"
+      - TZ=America/Mexico_City
+    ports:
+      - "5601:5601"
+    networks:
+      - newsbot-network
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # NewsBot Services
+  ingestor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: ingestor
+    container_name: newsbot-ingestor
+    environment:
+      - SERVICE_NAME=ingestor
+      - SERVICE_PORT=8001
+      - DATABASE_URL=postgresql+asyncpg://newsbot:newsbot@postgres:5432/newsbot
+      - DATABASE_URL_SYNC=postgresql://newsbot:newsbot@postgres:5432/newsbot
+      - REDIS_URL=redis://:newsbot@redis:6379
+      - TEMPORAL_HOST=temporal
+      - OPENSEARCH_HOST=opensearch
+      - TZ=America/Mexico_City
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./config:/app/config:ro
+    networks:
+      - newsbot-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  trender:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: trender
+    container_name: newsbot-trender
+    environment:
+      - SERVICE_NAME=trender
+      - SERVICE_PORT=8002
+      - DATABASE_URL=postgresql+asyncpg://newsbot:newsbot@postgres:5432/newsbot
+      - DATABASE_URL_SYNC=postgresql://newsbot:newsbot@postgres:5432/newsbot
+      - REDIS_URL=redis://:newsbot@redis:6379
+      - TEMPORAL_HOST=temporal
+      - OPENSEARCH_HOST=opensearch
+      - TZ=America/Mexico_City
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./config:/app/config:ro
+    networks:
+      - newsbot-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  rewriter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: rewriter
+    container_name: newsbot-rewriter
+    environment:
+      - SERVICE_NAME=rewriter
+      - SERVICE_PORT=8003
+      - DATABASE_URL=postgresql+asyncpg://newsbot:newsbot@postgres:5432/newsbot
+      - DATABASE_URL_SYNC=postgresql://newsbot:newsbot@postgres:5432/newsbot
+      - REDIS_URL=redis://:newsbot@redis:6379
+      - TEMPORAL_HOST=temporal
+      - OPENSEARCH_HOST=opensearch
+      - TZ=America/Mexico_City
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./config:/app/config:ro
+    networks:
+      - newsbot-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  mediaer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: mediaer
+    container_name: newsbot-mediaer
+    environment:
+      - SERVICE_NAME=mediaer
+      - SERVICE_PORT=8004
+      - DATABASE_URL=postgresql+asyncpg://newsbot:newsbot@postgres:5432/newsbot
+      - DATABASE_URL_SYNC=postgresql://newsbot:newsbot@postgres:5432/newsbot
+      - REDIS_URL=redis://:newsbot@redis:6379
+      - TEMPORAL_HOST=temporal
+      - OPENSEARCH_HOST=opensearch
+      - TZ=America/Mexico_City
+    ports:
+      - "8004:8004"
+    volumes:
+      - ./config:/app/config:ro
+    networks:
+      - newsbot-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  publisher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: publisher
+    container_name: newsbot-publisher
+    environment:
+      - SERVICE_NAME=publisher
+      - SERVICE_PORT=8005
+      - DATABASE_URL=postgresql+asyncpg://newsbot:newsbot@postgres:5432/newsbot
+      - DATABASE_URL_SYNC=postgresql://newsbot:newsbot@postgres:5432/newsbot
+      - REDIS_URL=redis://:newsbot@redis:6379
+      - TEMPORAL_HOST=temporal
+      - OPENSEARCH_HOST=opensearch
+      - TZ=America/Mexico_City
+    ports:
+      - "8005:8005"
+    volumes:
+      - ./config:/app/config:ro
+    networks:
+      - newsbot-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  watchdog:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: watchdog
+    container_name: newsbot-watchdog
+    environment:
+      - SERVICE_NAME=watchdog
+      - SERVICE_PORT=8006
+      - DATABASE_URL=postgresql+asyncpg://newsbot:newsbot@postgres:5432/newsbot
+      - DATABASE_URL_SYNC=postgresql://newsbot:newsbot@postgres:5432/newsbot
+      - REDIS_URL=redis://:newsbot@redis:6379
+      - TEMPORAL_HOST=temporal
+      - OPENSEARCH_HOST=opensearch
+      - TZ=America/Mexico_City
+    ports:
+      - "8006:8006"
+    volumes:
+      - ./config:/app/config:ro
+    networks:
+      - newsbot-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  opensearch_data:
+    driver: local
+
+networks:
+  newsbot-network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16

@@ -1,0 +1,284 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# pdm
+.pdm.toml
+
+# PEP 582
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# PyCharm
+.idea/
+
+# UV
+uv.lock
+
+# Docker
+.dockerignore
+
+# Docker Compose
+docker-compose.override.yml
+docker-compose.prod.yml
+
+# Volumes and data
+postgres_data/
+redis_data/
+opensearch_data/
+temporal_data/
+
+# Logs
+logs/
+*.log
+
+# Configuration
+config/local.yaml
+config/development.yaml
+config/production.yaml
+
+# Secrets and API keys
+.secrets/
+*.key
+*.pem
+*.crt
+
+# IDE and editors
+.vscode/
+.vs/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Media files
+media/
+uploads/
+static/collected/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Backup files
+*.bak
+*.backup
+
+# Development files
+scratch/
+playground/
+experiments/
+
+# AI and ML models
+models/
+*.h5
+*.pkl
+*.joblib
+
+# Cache
+.cache/
+.ruff_cache/
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Documentation
+site/
+docs/_build/
+
+# Local environment files
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Jupyter
+.jupyter/
+*.ipynb
+
+# Monitoring and observability
+prometheus_data/
+grafana_data/
+
+# Certificates
+*.crt
+*.key
+*.pem
+*.p12
+*.pfx
+
+# NewsBot specific
+newsbot.log
+article_images/
+processed_content/
+exported_data/
+
+# Temporal workflow data
+.temporal/
+
+# OpenSearch/Elasticsearch data
+elasticsearch_data/
+
+# Redis dumps
+dump.rdb
+
+# Alembic
+alembic.ini.local
+
+# PyTorch
+*.pt
+*.pth
+
+# TensorFlow
+*.pb
+checkpoint
+*.ckpt*
+
+# Transformers cache
+.cache/huggingface/
+.cache/torch/
+
+# NLTK data
+nltk_data/
+
+# spaCy models
+models/

@@ -1,0 +1,71 @@
+# Ruff configuration for NewsBot
+target-version = "py311"
+line-length = 100
+indent-width = 4
+
+# Enable essential rules
+select = ["E4", "E7", "E9", "F", "W", "I", "N", "UP", "B", "A", "C4", "T20", "Q"]
+
+# Ignore minor rules
+ignore = [
+    "E501",    # line too long (handled by formatter)
+    "W503",    # line break before binary operator
+    "W504",    # line break after binary operator
+    "E203",    # whitespace before ':'
+    "N806",    # variable in function should be lowercase (for pydantic models)
+    "A003",    # builtin-attribute-shadowing
+    "B008",    # function-call-in-default-argument (for FastAPI Depends)
+]
+
+# Allow unused variables when underscore-prefixed
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[per-file-ignores]
+"tests/*" = ["S101", "PLR2004", "ARG001"]
+"__init__.py" = ["F401"]
+"*/migrations/*" = ["E501"]
+
+[isort]
+known-first-party = ["newsbot"]
+force-single-line = true
+
+[mccabe]
+max-complexity = 10
+
+# Exclude directories and files
+exclude = [
+    ".git",
+    ".venv", 
+    "venv",
+    "__pycache__",
+    "build",
+    "dist",
+    ".eggs",
+    "*.egg-info",
+    ".mypy_cache",
+    ".pytest_cache", 
+    ".ruff_cache",
+    "migrations",
+]
+
+# Per-file ignores
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401", "F403"]  # allow unused/star imports
+"tests/**/*" = ["ARG", "S101", "S106"]  # test-specific ignores
+"scripts/**/*" = ["S101"]  # allow asserts in scripts
+"conftest.py" = ["ARG"]
+
+# Import sorting
+[tool.ruff.isort]
+known-first-party = ["newsbot"]
+force-sort-within-sections = true
+split-on-trailing-comma = true
+combine-as-imports = true
+
+# Naming conventions
+[tool.ruff.pep8-naming]
+classmethod-decorators = ["classmethod", "pydantic.validator"]
+
+# flake8-bugbear options
+[tool.ruff.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path"]

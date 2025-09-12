@@ -1,0 +1,41 @@
+# News sources configuration
+# Time window for content processing
+window_hours: 24
+
+# Maximum posts to process per run
+max_posts_per_run: 100
+
+# Supported languages
+languages: [es, en]
+
+# RSS sources configuration (renamed from feeds to sources)
+sources:
+  - name: Reuters World
+    type: rss
+    url: https://www.reuters.com/world/rss
+    lang: en
+    active: true
+    
+  - name: AP Top News
+    type: rss
+    url: https://apnews.com/hub/ap-top-news?output=rss
+    lang: en
+    active: true
+    
+  - name: El País Internacional
+    type: rss
+    url: https://elpais.com/rss/elpais/internacional.xml
+    lang: es
+    active: true
+    
+  - name: BBC News
+    type: rss
+    url: https://feeds.bbci.co.uk/news/rss.xml
+    lang: en
+    active: true
+    
+  - name: CNN World
+    type: rss
+    url: https://rss.cnn.com/rss/edition.rss
+    lang: en
+    active: true
