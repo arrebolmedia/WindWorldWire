@@ -4,7 +4,9 @@
 defaults:
   lang: [es, en]
   cadence: hourly
+  cadence_minutes: 60  # Default trending analysis cadence
   max_posts_per_run: 1
+  max_per_run: 5       # Maximum trending items per topic per run
   min_words: 180
   image_strategy: mixed
   credit_label: "Cortesía de"
@@ -15,6 +17,8 @@ topics:
     name: "Taiwán y seguridad regional"
     priority: 0.9
     cadence: hourly
+    cadence_minutes: 30  # High priority topic, check more frequently
+    max_per_run: 3       # Allow more trending items for important security topics
     queries:
       - '"Taiwan" OR "Taipei" OR "Taipéi"'
       - '"Taiwan Strait" OR (Estrecho NEAR/3 Taiwan)'
@@ -25,6 +29,8 @@ topics:
   - name: "Empresas y Negocios"
     slug: "empresas-negocios"
     description: "Noticias corporativas, fusiones, adquisiciones y estrategia empresarial"
+    cadence_minutes: 120  # Business news, check every 2 hours
+    max_per_run: 4
     keywords:
       - "corporativos"
       - "CEO"
@@ -38,6 +44,8 @@ topics:
   - name: "Tecnología y Fintech"
     slug: "tecnologia-fintech"
     description: "Innovación tecnológica, fintech y transformación digital en México"
+    cadence_minutes: 90   # Tech moves fast, check every 1.5 hours
+    max_per_run: 6        # Tech generates many trending topics
     keywords:
       - "fintech"
       - "blockchain"
@@ -51,6 +59,8 @@ topics:
   - name: "Energía y Petróleo"
     slug: "energia-petroleo"
     description: "Sector energético, PEMEX, energías renovables y política energética"
+    cadence_minutes: 180  # Energy sector, check every 3 hours
+    max_per_run: 4
     keywords:
       - "PEMEX"
       - "petróleo"
@@ -63,6 +73,8 @@ topics:
   - name: "Banca y Seguros"
     slug: "banca-seguros"
     description: "Sistema bancario mexicano, seguros y servicios financieros"
+    cadence_minutes: 240  # Banking, check every 4 hours
+    max_per_run: 3
     keywords:
       - "bancos"
       - "BBVA"
@@ -76,6 +88,8 @@ topics:
   - name: "Retail y Consumo"
     slug: "retail-consumo"
     description: "Sector retail, comercio electrónico y tendencias de consumo"
+    cadence_minutes: 360  # Retail, check every 6 hours
+    max_per_run: 3
     keywords:
       - "retail"
       - "e-commerce"
@@ -89,6 +103,8 @@ topics:
   - name: "Inmobiliario y Construcción"
     slug: "inmobiliario-construccion"
     description: "Mercado inmobiliario, desarrollo urbano y sector constructor"
+    cadence_minutes: 480  # Real estate, check every 8 hours
+    max_per_run: 2
     keywords:
       - "inmobiliario"
       - "vivienda"
@@ -102,6 +118,8 @@ topics:
   - name: "Política Económica"
     slug: "politica-economica"
     description: "Políticas gubernamentales que impactan la economía y los negocios"
+    cadence_minutes: 120  # Government policy, check every 2 hours
+    max_per_run: 5        # Policy changes can be trending
     keywords:
       - "SHCP"
       - "presupuesto"
@@ -115,6 +133,8 @@ topics:
   - name: "Mercados Internacionales"
     slug: "mercados-internacionales"
     description: "Mercados globales, comercio internacional y economía mundial"
+    cadence_minutes: 180  # International markets, check every 3 hours
+    max_per_run: 4
     keywords:
       - "Wall Street"
       - "Fed"
@@ -128,6 +148,8 @@ topics:
   - name: "Emprendimiento"
     slug: "emprendimiento"
     description: "Startups, emprendedores mexicanos y ecosistema de innovación"
+    cadence_minutes: 360  # Entrepreneurship, check every 6 hours
+    max_per_run: 3
     keywords:
       - "startups"
       - "emprendedores"
@@ -139,6 +161,8 @@ topics:
   - name: "Sostenibilidad"
     slug: "sostenibilidad"
     description: "ESG, sustentabilidad corporativa y economía verde"
+    cadence_minutes: 720  # Sustainability, check every 12 hours
+    max_per_run: 2
     keywords:
       - "ESG"
       - "sustentabilidad"
@@ -150,6 +174,8 @@ topics:
   - name: "Análisis y Opinión"
     slug: "analisis-opinion"
     description: "Análisis económico, opiniones de expertos y columnistas especializados"
+    cadence_minutes: 480  # Analysis, check every 8 hours
+    max_per_run: 2
     keywords:
       - "análisis"
       - "opinión"

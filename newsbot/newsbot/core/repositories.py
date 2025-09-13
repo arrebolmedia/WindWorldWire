@@ -7,11 +7,15 @@ for raw items with duplicate detection.
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Tuple, Dict, Any
 
-from sqlalchemy import select, update, func, delete
+from sqlalchemy import (
+    select, func, delete, update, text, 
+    desc, and_, or_
+)
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from newsbot.core.models import Source, RawItem
+from newsbot.core.models import Source, RawItem, Cluster, ClusterItem, Topic, TopicRun
 from newsbot.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -460,3 +464,524 @@ async def cleanup_old_raw_items(
         logger.info(f"Cleaned up {items_to_delete} raw items older than {days_to_keep} days")
     
     return items_to_delete
+
+
+# =============================================================================
+# CLUSTERING AND TRENDING REPOSITORIES
+# =============================================================================
+
+async def create_cluster(session: AsyncSession, name: str, 
+                        centroid_vector: Optional[str] = None,
+                        created_at: Optional[datetime] = None) -> Optional[int]:
+    """
+    Create a new cluster.
+    
+    Args:
+        session: Database session
+        name: Cluster name
+        centroid_vector: JSON serialized embedding vector
+        created_at: Creation timestamp (defaults to now)
+        
+    Returns:
+        Cluster ID if successful, None otherwise
+    """
+    try:
+        cluster = Cluster(
+            name=name,
+            centroid_vector=centroid_vector,
+            created_at=created_at or datetime.now(timezone.utc),
+            is_active=True
+        )
+        
+        session.add(cluster)
+        await session.commit()
+        await session.refresh(cluster)
+        
+        logger.debug(f"Created cluster {cluster.id}: {name}")
+        return cluster.id
+        
+    except Exception as e:
+        logger.error(f"Error creating cluster '{name}': {e}")
+        await session.rollback()
+        return None
+
+
+async def add_item_to_cluster(session: AsyncSession, cluster_id: int, 
+                            raw_item_id: int, match_score: Optional[float] = None) -> bool:
+    """
+    Add a raw item to a cluster.
+    
+    Args:
+        session: Database session
+        cluster_id: Cluster ID
+        raw_item_id: Raw item ID
+        match_score: How well the item matches the cluster (0.0-1.0)
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        # Use upsert to handle duplicates
+        stmt = pg_insert(ClusterItem).values(
+            cluster_id=cluster_id,
+            raw_item_id=raw_item_id,
+            match_score=str(match_score) if match_score is not None else None,
+            added_at=datetime.now(timezone.utc)
+        )
+        
+        # On conflict, update the match score and timestamp
+        stmt = stmt.on_conflict_do_update(
+            constraint='uq_cluster_item',
+            set_={
+                'match_score': stmt.excluded.match_score,
+                'added_at': stmt.excluded.added_at
+            }
+        )
+        
+        await session.execute(stmt)
+        await session.commit()
+        
+        logger.debug(f"Added item {raw_item_id} to cluster {cluster_id}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error adding item {raw_item_id} to cluster {cluster_id}: {e}")
+        await session.rollback()
+        return False
+
+
+async def get_active_clusters(session: AsyncSession, 
+                            window_hours: Optional[int] = None) -> List[Cluster]:
+    """
+    Get active clusters, optionally within a time window.
+    
+    Args:
+        session: Database session
+        window_hours: Only return clusters created within this many hours
+        
+    Returns:
+        List of active clusters
+    """
+    try:
+        stmt = select(Cluster).where(Cluster.is_active == True)
+        
+        if window_hours:
+            cutoff_time = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+            stmt = stmt.where(Cluster.created_at >= cutoff_time)
+        
+        stmt = stmt.order_by(desc(Cluster.created_at))
+        
+        result = await session.execute(stmt)
+        clusters = result.scalars().all()
+        
+        logger.debug(f"Retrieved {len(clusters)} active clusters")
+        return list(clusters)
+        
+    except Exception as e:
+        logger.error(f"Error retrieving active clusters: {e}")
+        return []
+
+
+async def get_cluster_with_items(session: AsyncSession, cluster_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Get cluster with all associated items.
+    
+    Args:
+        session: Database session
+        cluster_id: Cluster ID
+        
+    Returns:
+        Dictionary with cluster info and items, or None if not found
+    """
+    try:
+        # Get cluster
+        cluster_stmt = select(Cluster).where(Cluster.id == cluster_id)
+        cluster_result = await session.execute(cluster_stmt)
+        cluster = cluster_result.scalar_one_or_none()
+        
+        if not cluster:
+            return None
+        
+        # Get cluster items with raw item data
+        items_stmt = (
+            select(RawItem, ClusterItem.match_score, ClusterItem.added_at)
+            .join(ClusterItem, RawItem.id == ClusterItem.raw_item_id)
+            .where(ClusterItem.cluster_id == cluster_id)
+            .order_by(desc(ClusterItem.added_at))
+        )
+        
+        items_result = await session.execute(items_stmt)
+        items_data = items_result.all()
+        
+        # Convert to dictionaries
+        items = []
+        for raw_item, match_score, added_at in items_data:
+            item_dict = {
+                'id': raw_item.id,
+                'title': raw_item.title,
+                'url': raw_item.url,
+                'summary': raw_item.summary,
+                'lang': raw_item.lang,
+                'published_at': raw_item.published_at,
+                'fetched_at': raw_item.fetched_at,
+                'source_id': raw_item.source_id,
+                'match_score': float(match_score) if match_score else None,
+                'added_at': added_at
+            }
+            items.append(item_dict)
+        
+        return {
+            'cluster_id': cluster.id,
+            'name': cluster.name,
+            'title': cluster.title,
+            'description': cluster.description,
+            'created_at': cluster.created_at,
+            'composite_score': float(cluster.composite_score) if cluster.composite_score else None,
+            'item_count': len(items),
+            'items': items
+        }
+        
+    except Exception as e:
+        logger.error(f"Error retrieving cluster {cluster_id} with items: {e}")
+        return None
+
+
+async def get_cluster_items(session: AsyncSession, cluster_id: int) -> List[Dict[str, Any]]:
+    """
+    Get all items in a cluster.
+    
+    Args:
+        session: Database session
+        cluster_id: Cluster ID
+        
+    Returns:
+        List of item dictionaries
+    """
+    try:
+        stmt = (
+            select(RawItem)
+            .join(ClusterItem, RawItem.id == ClusterItem.raw_item_id)
+            .where(ClusterItem.cluster_id == cluster_id)
+            .order_by(desc(RawItem.published_at))
+        )
+        
+        result = await session.execute(stmt)
+        raw_items = result.scalars().all()
+        
+        items = []
+        for item in raw_items:
+            items.append({
+                'id': item.id,
+                'title': item.title,
+                'url': item.url,
+                'summary': item.summary,
+                'content': item.payload.get('content', '') if item.payload else '',
+                'lang': item.lang,
+                'published_at': item.published_at,
+                'fetched_at': item.fetched_at,
+                'source_id': item.source_id,
+                'source_url': item.payload.get('source_url', '') if item.payload else ''
+            })
+        
+        return items
+        
+    except Exception as e:
+        logger.error(f"Error retrieving items for cluster {cluster_id}: {e}")
+        return []
+
+
+async def update_cluster_centroid(session: AsyncSession, cluster_id: int, 
+                                centroid_vector: str) -> bool:
+    """
+    Update cluster centroid vector.
+    
+    Args:
+        session: Database session
+        cluster_id: Cluster ID
+        centroid_vector: JSON serialized centroid vector
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        stmt = (
+            update(Cluster)
+            .where(Cluster.id == cluster_id)
+            .values(
+                centroid_vector=centroid_vector,
+                updated_at=datetime.now(timezone.utc)
+            )
+        )
+        
+        result = await session.execute(stmt)
+        await session.commit()
+        
+        if result.rowcount > 0:
+            logger.debug(f"Updated centroid for cluster {cluster_id}")
+            return True
+        else:
+            logger.warning(f"Cluster {cluster_id} not found for centroid update")
+            return False
+        
+    except Exception as e:
+        logger.error(f"Error updating centroid for cluster {cluster_id}: {e}")
+        await session.rollback()
+        return False
+
+
+async def update_cluster_score(session: AsyncSession, cluster_id: int, 
+                             composite_score: float,
+                             viral_score: Optional[float] = None,
+                             freshness_score: Optional[float] = None,
+                             diversity_score: Optional[float] = None,
+                             volume_score: Optional[float] = None,
+                             quality_score: Optional[float] = None) -> bool:
+    """
+    Update cluster scoring metrics.
+    
+    Args:
+        session: Database session
+        cluster_id: Cluster ID
+        composite_score: Overall composite score
+        viral_score: Optional viral score component
+        freshness_score: Optional freshness score component
+        diversity_score: Optional diversity score component
+        volume_score: Optional volume score component
+        quality_score: Optional quality score component
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        update_data = {
+            'composite_score': str(composite_score),
+            'last_scored_at': datetime.now(timezone.utc),
+            'updated_at': datetime.now(timezone.utc)
+        }
+        
+        # Add optional score components
+        if viral_score is not None:
+            update_data['viral_score'] = str(viral_score)
+        if freshness_score is not None:
+            update_data['freshness_score'] = str(freshness_score)
+        if diversity_score is not None:
+            update_data['diversity_score'] = str(diversity_score)
+        if volume_score is not None:
+            update_data['volume_score'] = str(volume_score)
+        if quality_score is not None:
+            update_data['quality_score'] = str(quality_score)
+        
+        stmt = (
+            update(Cluster)
+            .where(Cluster.id == cluster_id)
+            .values(**update_data)
+        )
+        
+        result = await session.execute(stmt)
+        await session.commit()
+        
+        if result.rowcount > 0:
+            logger.debug(f"Updated scores for cluster {cluster_id}: {composite_score:.3f}")
+            return True
+        else:
+            logger.warning(f"Cluster {cluster_id} not found for score update")
+            return False
+        
+    except Exception as e:
+        logger.error(f"Error updating scores for cluster {cluster_id}: {e}")
+        await session.rollback()
+        return False
+
+
+async def get_cluster_stats(session: AsyncSession, cluster_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Get statistical information about a cluster.
+    
+    Args:
+        session: Database session
+        cluster_id: Cluster ID
+        
+    Returns:
+        Dictionary with cluster statistics or None if not found
+    """
+    try:
+        # Get cluster basic info
+        cluster_stmt = select(Cluster).where(Cluster.id == cluster_id)
+        cluster_result = await session.execute(cluster_stmt)
+        cluster = cluster_result.scalar_one_or_none()
+        
+        if not cluster:
+            return None
+        
+        # Count items
+        count_stmt = (
+            select(func.count(ClusterItem.id))
+            .where(ClusterItem.cluster_id == cluster_id)
+        )
+        count_result = await session.execute(count_stmt)
+        item_count = count_result.scalar() or 0
+        
+        # Get unique sources
+        sources_stmt = (
+            select(func.count(func.distinct(RawItem.source_id)))
+            .join(ClusterItem, RawItem.id == ClusterItem.raw_item_id)
+            .where(ClusterItem.cluster_id == cluster_id)
+        )
+        sources_result = await session.execute(sources_stmt)
+        unique_sources = sources_result.scalar() or 0
+        
+        return {
+            'cluster_id': cluster_id,
+            'item_count': item_count,
+            'unique_sources': unique_sources,
+            'composite_score': float(cluster.composite_score) if cluster.composite_score else None,
+            'created_at': cluster.created_at,
+            'last_scored_at': cluster.last_scored_at
+        }
+        
+    except Exception as e:
+        logger.error(f"Error retrieving stats for cluster {cluster_id}: {e}")
+        return None
+
+
+async def get_recent_raw_items(session: AsyncSession, hours: int = 24,
+                             limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """
+    Get recent raw items for analysis.
+    
+    Args:
+        session: Database session
+        hours: Number of hours back to look
+        limit: Maximum number of items to return
+        
+    Returns:
+        List of raw item dictionaries
+    """
+    try:
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+        
+        stmt = (
+            select(RawItem)
+            .where(RawItem.fetched_at >= cutoff_time)
+            .order_by(desc(RawItem.fetched_at))
+        )
+        
+        if limit:
+            stmt = stmt.limit(limit)
+        
+        result = await session.execute(stmt)
+        raw_items = result.scalars().all()
+        
+        items = []
+        for item in raw_items:
+            item_dict = {
+                'id': item.id,
+                'title': item.title,
+                'url': item.url,
+                'summary': item.summary,
+                'content': item.payload.get('content', '') if item.payload else '',
+                'lang': item.lang,
+                'published_at': item.published_at,
+                'fetched_at': item.fetched_at,
+                'source_id': item.source_id,
+                'source_url': item.payload.get('source_url', '') if item.payload else '',
+                'url_sha1': item.url_sha1,
+                'text_simhash': item.text_simhash
+            }
+            items.append(item_dict)
+        
+        logger.debug(f"Retrieved {len(items)} recent items from last {hours} hours")
+        return items
+        
+    except Exception as e:
+        logger.error(f"Error retrieving recent raw items: {e}")
+        return []
+
+
+# =============================================================================
+# TOPICS REPOSITORIES
+# =============================================================================
+
+async def get_topic_by_name(session: AsyncSession, name: str) -> Optional[Topic]:
+    """
+    Get topic configuration by name.
+    
+    Args:
+        session: Database session
+        name: Topic name
+        
+    Returns:
+        Topic object or None if not found
+    """
+    try:
+        stmt = select(Topic).where(
+            and_(Topic.name == name, Topic.is_active == True)
+        )
+        
+        result = await session.execute(stmt)
+        topic = result.scalar_one_or_none()
+        
+        return topic
+        
+    except Exception as e:
+        logger.error(f"Error retrieving topic '{name}': {e}")
+        return None
+
+
+async def get_active_topics(session: AsyncSession) -> List[Topic]:
+    """
+    Get all active topics.
+    
+    Args:
+        session: Database session
+        
+    Returns:
+        List of active topics
+    """
+    try:
+        stmt = (
+            select(Topic)
+            .where(Topic.is_active == True)
+            .order_by(Topic.name)
+        )
+        
+        result = await session.execute(stmt)
+        topics = result.scalars().all()
+        
+        return list(topics)
+        
+    except Exception as e:
+        logger.error(f"Error retrieving active topics: {e}")
+        return []
+
+
+async def update_topic_last_run(session: AsyncSession, topic_id: int) -> bool:
+    """
+    Update topic last run timestamp.
+    
+    Args:
+        session: Database session
+        topic_id: Topic ID
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        stmt = (
+            update(Topic)
+            .where(Topic.id == topic_id)
+            .values(
+                last_run_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc)
+            )
+        )
+        
+        result = await session.execute(stmt)
+        await session.commit()
+        
+        return result.rowcount > 0
+        
+    except Exception as e:
+        logger.error(f"Error updating last run for topic {topic_id}: {e}")
+        await session.rollback()
+        return False
