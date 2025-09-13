@@ -4,7 +4,7 @@ from typing import Optional
 
 from sqlalchemy import (
     Column, String, DateTime, Boolean, Text, Integer, BigInteger,
-    ForeignKey, JSON, Index, UniqueConstraint
+    ForeignKey, JSON, Index, UniqueConstraint, Float, ARRAY
 )
 from sqlalchemy.orm import mapped_column, relationship
 from sqlalchemy.sql import func
@@ -51,34 +51,19 @@ class Cluster(Base):
     """Article clusters for grouping related content and trending analysis."""
     __tablename__ = "clusters"
     
-    id = mapped_column(Integer, primary_key=True)
-    name = mapped_column(String(500), nullable=True)  # Human-readable cluster name
-    title = mapped_column(String(500), nullable=True)  # Representative title
-    description = mapped_column(Text, nullable=True)  # Combined summary
-    keywords = mapped_column(JSON, nullable=True)  # List of keywords
-    
-    # Trending and scoring fields
-    centroid_vector = mapped_column(Text, nullable=True)  # JSON serialized embedding
-    composite_score = mapped_column(String(20), nullable=True)  # Float as string for precision
-    viral_score = mapped_column(String(20), nullable=True)
-    freshness_score = mapped_column(String(20), nullable=True)
-    diversity_score = mapped_column(String(20), nullable=True)
-    volume_score = mapped_column(String(20), nullable=True)
-    quality_score = mapped_column(String(20), nullable=True)
-    
-    # Metadata
-    item_count = mapped_column(Integer, default=0, nullable=False)
-    unique_sources = mapped_column(Integer, default=0, nullable=False)
-    unique_domains = mapped_column(Integer, default=0, nullable=False)
-    avg_age_hours = mapped_column(String(20), nullable=True)  # Float as string
-    
-    # Timestamps
-    created_at = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
-    updated_at = mapped_column(DateTime(timezone=True), onupdate=func.now())
-    last_scored_at = mapped_column(DateTime(timezone=True), nullable=True)
-    
-    # Status
-    is_active = mapped_column(Boolean, default=True, nullable=False, index=True)
+    id = mapped_column(BigInteger, primary_key=True)
+    centroid = mapped_column(ARRAY(Float), nullable=True)  # embedding medio (opcional)
+    topic_key = mapped_column(String(64), nullable=True, index=True)  # si viene de tema dirigido
+    first_seen = mapped_column(DateTime(timezone=True), index=True)
+    last_seen = mapped_column(DateTime(timezone=True), index=True)
+    items_count = mapped_column(Integer, default=0, nullable=False)
+    domains_count = mapped_column(Integer, default=0, nullable=False)
+    domains = mapped_column(JSON, nullable=True)  # {domain: count}
+    score_trend = mapped_column(Float, default=0.0, index=True)
+    score_fresh = mapped_column(Float, default=0.0)
+    score_diversity = mapped_column(Float, default=0.0)
+    score_total = mapped_column(Float, default=0.0, index=True)
+    status = mapped_column(String(16), default="open")  # open|picked|stale
 
 
 class ClusterItem(Base):
@@ -86,15 +71,11 @@ class ClusterItem(Base):
     __tablename__ = "cluster_items"
     
     id = mapped_column(BigInteger, primary_key=True)
-    cluster_id = mapped_column(ForeignKey("clusters.id"), nullable=False, index=True)
-    raw_item_id = mapped_column(ForeignKey("raw_items.id"), nullable=False, index=True)
-    match_score = mapped_column(String(20), nullable=True)  # How well item matches cluster
-    added_at = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
-    
-    __table_args__ = (
-        UniqueConstraint("cluster_id", "raw_item_id", name="uq_cluster_item"),
-        Index('idx_cluster_items_cluster_added', 'cluster_id', 'added_at'),
-    )
+    cluster_id = mapped_column(ForeignKey("clusters.id"), index=True, nullable=False)
+    raw_item_id = mapped_column(ForeignKey("raw_items.id"), index=True, nullable=False)
+    source_domain = mapped_column(String(255), index=True)
+    similarity = mapped_column(Float, nullable=True)
+    created_at = mapped_column(DateTime(timezone=True), index=True)
 
 
 class Article(Base):
@@ -119,25 +100,11 @@ class Topic(Base):
     """Topics for content categorization and trending analysis."""
     __tablename__ = "topics"
     
-    id = mapped_column(Integer, primary_key=True)
-    name = mapped_column(String(255), nullable=False, unique=True, index=True)
-    description = mapped_column(Text, nullable=True)
-    keywords = mapped_column(JSON, nullable=True)  # List of related keywords
-    queries = mapped_column(JSON, nullable=True)  # List of search queries/patterns
-    
-    # Trending configuration
-    cadence_minutes = mapped_column(Integer, default=60, nullable=False)  # How often to analyze
-    max_per_run = mapped_column(Integer, default=20, nullable=False)  # Max trends per run
-    boost_factor = mapped_column(String(20), default="1.0", nullable=False)  # Score multiplier
-    min_score = mapped_column(String(20), default="0.1", nullable=False)  # Minimum relevance score
-    
-    # Status and metadata
-    is_active = mapped_column(Boolean, default=True, nullable=False, index=True)
-    last_run_at = mapped_column(DateTime(timezone=True), nullable=True, index=True)
-    created_at = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at = mapped_column(DateTime(timezone=True), onupdate=func.now())
-    
-    # TODO: Add hierarchical topic relationships
+    key = mapped_column(String(64), primary_key=True)
+    name = mapped_column(String(255), nullable=False)
+    priority = mapped_column(Float, default=0.5)
+    enabled = mapped_column(Boolean, default=True)
+    config = mapped_column(JSON, nullable=True)
 
 
 class TopicRun(Base):
@@ -145,7 +112,7 @@ class TopicRun(Base):
     __tablename__ = "topic_runs"
     
     id = mapped_column(Integer, primary_key=True)
-    topic_id = mapped_column(ForeignKey("topics.id"), nullable=False, index=True)
+    topic_key = mapped_column(ForeignKey("topics.key"), nullable=False, index=True)
     status = mapped_column(String(50), default="pending", index=True)
     results = mapped_column(JSON)  # Analysis results
     error_message = mapped_column(Text)
@@ -178,8 +145,7 @@ Index('idx_articles_status_created', Article.status, Article.created_at)
 Index('idx_topic_runs_status_started', TopicRun.status, TopicRun.started_at)
 Index('idx_fail_logs_service_created', FailLog.service, FailLog.created_at)
 
-# Trending-specific indexes
-Index('idx_clusters_score_created', Cluster.composite_score, Cluster.created_at)
-Index('idx_clusters_active_scored', Cluster.is_active, Cluster.last_scored_at)
-Index('idx_cluster_items_cluster_score', ClusterItem.cluster_id, ClusterItem.match_score)
-Index('idx_topics_active_lastrun', Topic.is_active, Topic.last_run_at)
+# Índices recomendados para trending
+Index('idx_clusters_last_seen_desc', Cluster.last_seen.desc())
+Index('idx_clusters_score_total_desc', Cluster.score_total.desc())
+Index('idx_cluster_items_source_domain', ClusterItem.source_domain)
