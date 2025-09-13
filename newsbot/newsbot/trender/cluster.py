@@ -1,493 +1,580 @@
-"""Clustering incremental para trending topics.
-
-Implementa clustering de contenido usando embeddings de texto para:
-- Agrupar artículos similares de forma incremental
-- Detectar temas emergentes y trending
-- Mantener clusters actualizados en tiempo real
-- Calcular centroídes y similarity scores
+"""
+Incremental semantic clustering for raw items using embeddings.
 """
 
-import asyncio
-import time
+import os
+import hashlib
+import json
 import numpy as np
-from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Any, Optional, Tuple
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.cluster import DBSCAN, MiniBatchKMeans
-from sklearn.metrics.pairwise import cosine_similarity
-from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import datetime, timezone
+from typing import List, Dict, Any, Optional, Tuple
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from urllib.parse import urlparse
 
-from newsbot.core.db import AsyncSessionLocal
 from newsbot.core.logging import get_logger
+from newsbot.core.db import AsyncSessionLocal
 from newsbot.core.repositories import (
-    get_recent_raw_items,
-    create_cluster,
-    add_item_to_cluster,
-    get_active_clusters,
-    update_cluster_centroid,
-    get_cluster_items
+    get_recent_raw_items
 )
 
 logger = get_logger(__name__)
 
-# Configuration
-DEFAULT_WINDOW_HOURS = 24
-MIN_CLUSTER_SIZE = 3
-MAX_CLUSTERS = 200
-SIMILARITY_THRESHOLD = 0.7
-DBSCAN_EPS = 0.3
-DBSCAN_MIN_SAMPLES = 2
-KMEANS_MAX_CLUSTERS = 50
+
+@dataclass
+class ClusterStats:
+    """Statistics for clustering operation."""
+    total_items: int
+    new_clusters: int
+    existing_clusters: int
+    items_clustered: int
+    processing_time: float
 
 
-class ContentEmbedder:
-    """Genera embeddings de texto para clustering."""
+class Embedder(ABC):
+    """Abstract base class for text embeddings."""
     
-    def __init__(self, max_features: int = 5000):
-        self.vectorizer = TfidfVectorizer(
-            max_features=max_features,
-            stop_words='english',
-            ngram_range=(1, 2),
-            min_df=2,
-            max_df=0.8
-        )
-        self.is_fitted = False
-    
-    def fit_transform(self, texts: List[str]) -> np.ndarray:
-        """Fit vectorizer and transform texts to embeddings."""
-        if not texts:
-            return np.array([])
+    @abstractmethod
+    def embed(self, texts: List[str]) -> np.ndarray:
+        """
+        Embed a list of texts into vectors.
         
+        Args:
+            texts: List of text strings to embed
+            
+        Returns:
+            Numpy array of shape (len(texts), embedding_dim)
+        """
+        pass
+    
+    @property
+    @abstractmethod
+    def embedding_dim(self) -> int:
+        """Return the dimensionality of embeddings."""
+        pass
+
+
+class SentenceTransformersEmbedder(Embedder):
+    """Real embedder using SentenceTransformers."""
+    
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        """
+        Initialize SentenceTransformers embedder.
+        
+        Args:
+            model_name: Name of the SentenceTransformers model to use
+        """
         try:
-            embeddings = self.vectorizer.fit_transform(texts)
-            self.is_fitted = True
-            logger.info(f"Fitted embeddings: {embeddings.shape}")
-            return embeddings.toarray()
-        except Exception as e:
-            logger.error(f"Error fitting embeddings: {e}")
-            return np.array([])
+            from sentence_transformers import SentenceTransformer
+            self.model = SentenceTransformer(model_name)
+            self._embedding_dim = self.model.get_sentence_embedding_dimension()
+            logger.info(f"Initialized SentenceTransformers embedder: {model_name}")
+        except ImportError:
+            raise ImportError(
+                "SentenceTransformers not available. Install with: "
+                "pip install sentence-transformers"
+            )
     
-    def transform(self, texts: List[str]) -> np.ndarray:
-        """Transform texts to embeddings using fitted vectorizer."""
-        if not self.is_fitted:
-            raise ValueError("Vectorizer not fitted. Call fit_transform first.")
-        
+    def embed(self, texts: List[str]) -> np.ndarray:
+        """Embed texts using SentenceTransformers."""
         if not texts:
-            return np.array([])
+            return np.array([]).reshape(0, self.embedding_dim)
         
-        try:
-            embeddings = self.vectorizer.transform(texts)
-            return embeddings.toarray()
-        except Exception as e:
-            logger.error(f"Error transforming embeddings: {e}")
-            return np.array([])
+        embeddings = self.model.encode(texts, convert_to_numpy=True)
+        return embeddings
     
-    def get_feature_names(self) -> List[str]:
-        """Get feature names from vectorizer."""
-        if not self.is_fitted:
-            return []
-        return self.vectorizer.get_feature_names_out().tolist()
+    @property
+    def embedding_dim(self) -> int:
+        """Return embedding dimensionality."""
+        return self._embedding_dim
+
+
+class DummyEmbedder(Embedder):
+    """Dummy embedder for testing - generates deterministic vectors from text hash."""
+    
+    def __init__(self, embedding_dim: int = 384):
+        """
+        Initialize dummy embedder.
+        
+        Args:
+            embedding_dim: Dimensionality of fake embeddings
+        """
+        self._embedding_dim = embedding_dim
+        logger.info(f"Initialized dummy embedder (dim={embedding_dim})")
+    
+    def embed(self, texts: List[str]) -> np.ndarray:
+        """Generate deterministic embeddings from text hash."""
+        if not texts:
+            return np.array([]).reshape(0, self.embedding_dim)
+        
+        embeddings = []
+        for text in texts:
+            # Generate deterministic vector from text hash
+            text_hash = hashlib.sha1(text.encode('utf-8')).hexdigest()
+            
+            # Convert hex to numbers and normalize
+            hex_nums = [int(text_hash[i:i+2], 16) for i in range(0, len(text_hash), 2)]
+            
+            # Repeat/truncate to get desired dimension
+            vector = []
+            for i in range(self.embedding_dim):
+                vector.append(hex_nums[i % len(hex_nums)] / 255.0)
+            
+            # Normalize to unit vector
+            vector = np.array(vector)
+            norm = np.linalg.norm(vector)
+            if norm > 0:
+                vector = vector / norm
+            
+            embeddings.append(vector)
+        
+        return np.array(embeddings)
+    
+    @property
+    def embedding_dim(self) -> int:
+        """Return embedding dimensionality."""
+        return self._embedding_dim
+
+
+@dataclass
+class ClusterInfo:
+    """Information about a cluster."""
+    id: int
+    centroid: np.ndarray
+    first_seen: datetime
+    last_seen: datetime
+    items_count: int
+    domains_count: int
+    domains: Dict[str, int]
+    topic_key: Optional[str] = None
 
 
 class IncrementalClusterer:
-    """Clustering incremental usando DBSCAN y K-means."""
+    """Incremental semantic clustering for news items."""
     
-    def __init__(self, method: str = "dbscan"):
-        self.method = method.lower()
-        self.embedder = ContentEmbedder()
-        self.cluster_centroids = {}  # cluster_id -> centroid vector
+    def __init__(self, 
+                 embedder: Optional[Embedder] = None,
+                 similarity_threshold: float = None):
+        """
+        Initialize incremental clusterer.
         
-    def prepare_content_text(self, item: Dict[str, Any]) -> str:
-        """Prepara texto del item para embeddings."""
-        parts = []
+        Args:
+            embedder: Embedder instance (defaults to auto-detect)
+            similarity_threshold: Cosine similarity threshold for cluster assignment
+        """
+        # Set similarity threshold from env or default
+        self.similarity_threshold = similarity_threshold or float(
+            os.getenv("CLUSTERING_SIMILARITY_THRESHOLD", "0.78")
+        )
         
-        # Title (weighted more heavily)
-        if item.get('title'):
-            title = str(item['title']).strip()
-            if title:
-                parts.append(f"{title} {title}")  # Double weight
-        
-        # Summary/description
-        if item.get('summary'):
-            summary = str(item['summary']).strip()
-            if summary:
-                parts.append(summary)
-        
-        # Content if available
-        if item.get('content'):
-            content = str(item['content']).strip()
-            if content:
-                # Truncate very long content
-                parts.append(content[:1000])
-        
-        return " ".join(parts)
-    
-    def cluster_dbscan(self, embeddings: np.ndarray) -> np.ndarray:
-        """Cluster using DBSCAN algorithm."""
-        if embeddings.shape[0] < DBSCAN_MIN_SAMPLES:
-            return np.array([-1] * embeddings.shape[0])
-        
-        try:
-            clusterer = DBSCAN(
-                eps=DBSCAN_EPS,
-                min_samples=DBSCAN_MIN_SAMPLES,
-                metric='cosine'
-            )
-            labels = clusterer.fit_predict(embeddings)
-            
-            n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-            n_noise = list(labels).count(-1)
-            
-            logger.info(f"DBSCAN: {n_clusters} clusters, {n_noise} noise points")
-            return labels
-            
-        except Exception as e:
-            logger.error(f"DBSCAN clustering failed: {e}")
-            return np.array([-1] * embeddings.shape[0])
-    
-    def cluster_kmeans(self, embeddings: np.ndarray, n_clusters: Optional[int] = None) -> np.ndarray:
-        """Cluster using Mini-Batch K-means."""
-        if embeddings.shape[0] < 2:
-            return np.array([0] * embeddings.shape[0])
-        
-        if n_clusters is None:
-            # Estimate number of clusters
-            n_clusters = min(
-                max(2, embeddings.shape[0] // 10),
-                KMEANS_MAX_CLUSTERS
-            )
-        
-        try:
-            clusterer = MiniBatchKMeans(
-                n_clusters=n_clusters,
-                random_state=42,
-                batch_size=100
-            )
-            labels = clusterer.fit_predict(embeddings)
-            
-            logger.info(f"K-means: {n_clusters} clusters")
-            return labels
-            
-        except Exception as e:
-            logger.error(f"K-means clustering failed: {e}")
-            return np.array([0] * embeddings.shape[0])
-    
-    def calculate_centroid(self, embeddings: np.ndarray) -> np.ndarray:
-        """Calculate centroid of embeddings."""
-        if embeddings.shape[0] == 0:
-            return np.array([])
-        return np.mean(embeddings, axis=0)
-    
-    def find_similar_cluster(self, item_embedding: np.ndarray, 
-                           existing_centroids: Dict[int, np.ndarray],
-                           threshold: float = SIMILARITY_THRESHOLD) -> Optional[int]:
-        """Find most similar existing cluster for new item."""
-        if not existing_centroids:
-            return None
-        
-        best_cluster = None
-        best_similarity = threshold
-        
-        for cluster_id, centroid in existing_centroids.items():
-            try:
-                similarity = cosine_similarity(
-                    item_embedding.reshape(1, -1),
-                    centroid.reshape(1, -1)
-                )[0, 0]
-                
-                if similarity > best_similarity:
-                    best_similarity = similarity
-                    best_cluster = cluster_id
-                    
-            except Exception as e:
-                logger.warning(f"Error calculating similarity with cluster {cluster_id}: {e}")
-        
-        return best_cluster
-
-
-async def cluster_recent_content(session: AsyncSession, 
-                               window_hours: int = DEFAULT_WINDOW_HOURS,
-                               incremental: bool = True) -> Dict[str, Any]:
-    """
-    Cluster contenido reciente de forma incremental.
-    
-    Args:
-        session: Database session
-        window_hours: Ventana de tiempo para contenido reciente
-        incremental: Si usar clustering incremental o recrear todo
-        
-    Returns:
-        Dictionary con estadísticas del clustering
-    """
-    start_time = time.time()
-    
-    try:
-        # Get recent content
-        recent_items = await get_recent_raw_items(session, hours=window_hours)
-        
-        if not recent_items:
-            logger.info("No recent content found for clustering")
-            return {
-                'runtime_seconds': time.time() - start_time,
-                'items_processed': 0,
-                'clusters_created': 0,
-                'clusters_updated': 0,
-                'items_clustered': 0
-            }
-        
-        logger.info(f"Found {len(recent_items)} recent items for clustering")
-        
-        # Initialize clusterer
-        clusterer = IncrementalClusterer()
-        
-        # Prepare text content
-        texts = []
-        valid_items = []
-        
-        for item in recent_items:
-            text = clusterer.prepare_content_text(item)
-            if text.strip():
-                texts.append(text)
-                valid_items.append(item)
-        
-        if not texts:
-            logger.warning("No valid text content found for clustering")
-            return {
-                'runtime_seconds': time.time() - start_time,
-                'items_processed': len(recent_items),
-                'clusters_created': 0,
-                'clusters_updated': 0,
-                'items_clustered': 0
-            }
-        
-        logger.info(f"Processing {len(texts)} items with valid text content")
-        
-        # Generate embeddings
-        embeddings = clusterer.embedder.fit_transform(texts)
-        
-        if embeddings.shape[0] == 0:
-            logger.error("Failed to generate embeddings")
-            return {
-                'runtime_seconds': time.time() - start_time,
-                'items_processed': len(recent_items),
-                'clusters_created': 0,
-                'clusters_updated': 0,
-                'items_clustered': 0
-            }
-        
-        stats = {
-            'runtime_seconds': 0,
-            'items_processed': len(recent_items),
-            'clusters_created': 0,
-            'clusters_updated': 0,
-            'items_clustered': 0
-        }
-        
-        if incremental:
-            # Incremental clustering
-            stats.update(await _incremental_clustering(
-                session, valid_items, embeddings, clusterer
-            ))
+        # Initialize embedder
+        if embedder is None:
+            self.embedder = self._create_default_embedder()
         else:
-            # Full re-clustering
-            stats.update(await _full_clustering(
-                session, valid_items, embeddings, clusterer
-            ))
+            self.embedder = embedder
         
-        stats['runtime_seconds'] = time.time() - start_time
+        # In-memory cluster cache
+        self.clusters: Dict[int, ClusterInfo] = {}
         
         logger.info(
-            f"Clustering completed: {stats['clusters_created']} new clusters, "
-            f"{stats['clusters_updated']} updated, {stats['items_clustered']} items clustered"
+            f"Initialized incremental clusterer "
+            f"(threshold={self.similarity_threshold}, embedder={type(self.embedder).__name__})"
+        )
+    
+    def _create_default_embedder(self) -> Embedder:
+        """Create default embedder with fallback."""
+        try:
+            return SentenceTransformersEmbedder()
+        except ImportError:
+            logger.warning(
+                "SentenceTransformers not available, using dummy embedder. "
+                "Install with: pip install sentence-transformers"
+            )
+            return DummyEmbedder()
+    
+    def _extract_domain(self, url: str) -> str:
+        """Extract domain from URL."""
+        try:
+            parsed = urlparse(url)
+            return parsed.netloc.lower()
+        except:
+            return "unknown"
+    
+    def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
+        """Compute cosine similarity between two vectors."""
+        dot_product = np.dot(vec1, vec2)
+        norm1 = np.linalg.norm(vec1)
+        norm2 = np.linalg.norm(vec2)
+        
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+        
+        return dot_product / (norm1 * norm2)
+    
+    def _find_best_cluster(self, item_embedding: np.ndarray) -> Tuple[Optional[int], float]:
+        """
+        Find the best matching cluster for an item.
+        
+        Args:
+            item_embedding: Embedding vector for the item
+            
+        Returns:
+            Tuple of (cluster_id, similarity_score) or (None, 0.0)
+        """
+        best_cluster_id = None
+        best_similarity = 0.0
+        
+        for cluster_id, cluster_info in self.clusters.items():
+            similarity = self._cosine_similarity(item_embedding, cluster_info.centroid)
+            
+            if similarity > best_similarity and similarity >= self.similarity_threshold:
+                best_similarity = similarity
+                best_cluster_id = cluster_id
+        
+        return best_cluster_id, best_similarity
+    
+    def _update_cluster_centroid(self, cluster_id: int, new_embedding: np.ndarray):
+        """Update cluster centroid with new item embedding."""
+        if cluster_id not in self.clusters:
+            return
+        
+        cluster_info = self.clusters[cluster_id]
+        current_count = cluster_info.items_count
+        current_centroid = cluster_info.centroid
+        
+        # Compute running average of embeddings
+        updated_centroid = (
+            (current_centroid * current_count + new_embedding) / (current_count + 1)
+        )
+        
+        # Normalize to unit vector
+        norm = np.linalg.norm(updated_centroid)
+        if norm > 0:
+            updated_centroid = updated_centroid / norm
+        
+        cluster_info.centroid = updated_centroid
+    
+    async def load_existing_clusters(self, window_hours: int = 72):
+        """
+        Load existing clusters from database.
+        
+        Args:
+            window_hours: Only load clusters from this time window
+        """
+        async with AsyncSessionLocal() as session:
+            from newsbot.core.models import Cluster
+            from sqlalchemy import select
+            from datetime import timedelta
+            
+            # Load clusters from the specified time window
+            cutoff_time = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+            
+            stmt = select(Cluster).where(
+                Cluster.first_seen >= cutoff_time
+            ).where(
+                Cluster.status == 'open'
+            )
+            
+            result = await session.execute(stmt)
+            clusters = result.scalars().all()
+            
+            for cluster in clusters:
+                # Parse centroid from database
+                centroid = None
+                if cluster.centroid and len(cluster.centroid) > 0:
+                    try:
+                        centroid = np.array(cluster.centroid)
+                    except:
+                        logger.warning(f"Could not parse centroid for cluster {cluster.id}")
+                        continue
+                
+                if centroid is None:
+                    # Skip clusters without valid centroids
+                    continue
+                
+                # Extract domain counts
+                domains = cluster.domains or {}
+                if isinstance(domains, str):
+                    try:
+                        domains = json.loads(domains)
+                    except:
+                        domains = {}
+                
+                cluster_info = ClusterInfo(
+                    id=cluster.id,
+                    centroid=centroid,
+                    first_seen=cluster.first_seen,
+                    last_seen=cluster.last_seen,
+                    items_count=cluster.items_count,
+                    domains_count=cluster.domains_count,
+                    domains=domains,
+                    topic_key=cluster.topic_key
+                )
+                
+                self.clusters[cluster.id] = cluster_info
+        
+        logger.info(f"Loaded {len(self.clusters)} existing clusters")
+    
+    async def cluster_recent_items(self, window_hours: int = 24) -> ClusterStats:
+        """
+        Cluster recent raw items.
+        
+        Args:
+            window_hours: Look back this many hours for items
+            
+        Returns:
+            ClusterStats with operation results
+        """
+        start_time = datetime.now()
+        
+        # Load existing clusters
+        await self.load_existing_clusters(window_hours * 3)  # Load wider window for clusters
+        
+        # Get recent items
+        async with AsyncSessionLocal() as session:
+            recent_items = await get_recent_raw_items(session, hours=window_hours)
+        
+        if not recent_items:
+            logger.info("No recent items to cluster")
+            return ClusterStats(
+                total_items=0,
+                new_clusters=0,
+                existing_clusters=len(self.clusters),
+                items_clustered=0,
+                processing_time=0.0
+            )
+        
+        # Prepare texts for embedding
+        texts = []
+        for item in recent_items:
+            # Combine title and summary for embedding
+            text_parts = [item['title']]
+            if item.get('summary'):
+                text_parts.append(item['summary'])
+            
+            text = ' '.join(text_parts).strip()
+            texts.append(text)
+        
+        # Generate embeddings
+        logger.info(f"Generating embeddings for {len(texts)} items")
+        embeddings = self.embedder.embed(texts)
+        
+        # Process each item
+        new_clusters = 0
+        items_clustered = 0
+        
+        for i, (item, embedding) in enumerate(zip(recent_items, embeddings)):
+            try:
+                # Find best cluster
+                best_cluster_id, similarity = self._find_best_cluster(embedding)
+                
+                if best_cluster_id is not None:
+                    # Add to existing cluster
+                    cluster_id = best_cluster_id
+                    logger.debug(f"Item {item['id']} -> cluster {cluster_id} (sim={similarity:.3f})")
+                else:
+                    # Create new cluster
+                    cluster_id = await self._create_new_cluster(item, embedding)
+                    new_clusters += 1
+                    logger.debug(f"Item {item['id']} -> new cluster {cluster_id}")
+                
+                if cluster_id:
+                    # Add item to cluster
+                    await self._add_item_to_cluster(cluster_id, item, similarity)
+                    items_clustered += 1
+                
+            except Exception as e:
+                logger.error(f"Error clustering item {item['id']}: {e}")
+                continue
+        
+        # Update cluster centroids in database
+        await self._persist_cluster_centroids()
+        
+        processing_time = (datetime.now() - start_time).total_seconds()
+        
+        stats = ClusterStats(
+            total_items=len(recent_items),
+            new_clusters=new_clusters,
+            existing_clusters=len(self.clusters) - new_clusters,
+            items_clustered=items_clustered,
+            processing_time=processing_time
+        )
+        
+        logger.info(
+            f"Clustering completed: {stats.items_clustered}/{stats.total_items} items, "
+            f"{stats.new_clusters} new clusters, {stats.processing_time:.2f}s"
         )
         
         return stats
-        
-    except Exception as e:
-        logger.error(f"Clustering failed: {e}")
-        return {
-            'runtime_seconds': time.time() - start_time,
-            'items_processed': 0,
-            'clusters_created': 0,
-            'clusters_updated': 0,
-            'items_clustered': 0,
-            'error': str(e)
-        }
-
-
-async def _incremental_clustering(session: AsyncSession,
-                                items: List[Dict[str, Any]],
-                                embeddings: np.ndarray,
-                                clusterer: IncrementalClusterer) -> Dict[str, Any]:
-    """Perform incremental clustering with existing clusters."""
     
-    # Get existing active clusters and their centroids
-    existing_clusters = await get_active_clusters(session)
-    existing_centroids = {}
-    
-    for cluster in existing_clusters:
-        if cluster.centroid_vector:
-            try:
-                # Deserialize centroid vector (assuming it's stored as JSON)
-                import json
-                centroid = np.array(json.loads(cluster.centroid_vector))
-                existing_centroids[cluster.id] = centroid
-            except Exception as e:
-                logger.warning(f"Failed to load centroid for cluster {cluster.id}: {e}")
-    
-    clusters_created = 0
-    clusters_updated = 0
-    items_clustered = 0
-    
-    # Process each item incrementally
-    for i, (item, embedding) in enumerate(zip(items, embeddings)):
+    async def _create_new_cluster(self, item: Dict[str, Any], embedding: np.ndarray) -> Optional[int]:
+        """Create a new cluster for an item."""
         try:
-            # Find similar existing cluster
-            similar_cluster_id = clusterer.find_similar_cluster(
-                embedding, existing_centroids
-            )
+            # Extract domain
+            domain = self._extract_domain(item['url'])
             
-            if similar_cluster_id:
-                # Add to existing cluster
-                await add_item_to_cluster(session, similar_cluster_id, item['id'])
+            # Create cluster in database
+            async with AsyncSessionLocal() as session:
+                from newsbot.core.models import Cluster
+                from sqlalchemy import insert
                 
-                # Update centroid
-                cluster_items = await get_cluster_items(session, similar_cluster_id)
-                if cluster_items:
-                    # Recalculate centroid
-                    cluster_embeddings = []
-                    for cluster_item in cluster_items:
-                        item_text = clusterer.prepare_content_text(cluster_item)
-                        if item_text:
-                            item_emb = clusterer.embedder.transform([item_text])
-                            if item_emb.shape[0] > 0:
-                                cluster_embeddings.append(item_emb[0])
-                    
-                    if cluster_embeddings:
-                        new_centroid = np.mean(cluster_embeddings, axis=0)
-                        existing_centroids[similar_cluster_id] = new_centroid
-                        
-                        # Update in database
-                        import json
-                        await update_cluster_centroid(
-                            session, similar_cluster_id, json.dumps(new_centroid.tolist())
-                        )
-                        
-                        clusters_updated += 1
+                cluster_data = {
+                    'centroid': embedding.tolist(),
+                    'first_seen': item['published_at'] or item['fetched_at'],
+                    'last_seen': item['published_at'] or item['fetched_at'],
+                    'items_count': 0,
+                    'domains_count': 1 if domain != "unknown" else 0,
+                    'domains': {domain: 1} if domain != "unknown" else {},
+                    'score_trend': 0.0,
+                    'score_fresh': 0.0,
+                    'score_diversity': 0.0,
+                    'score_total': 0.0,
+                    'status': 'open'
+                }
                 
-                items_clustered += 1
+                stmt = insert(Cluster).values(**cluster_data)
+                result = await session.execute(stmt)
+                await session.commit()
                 
-            else:
-                # Create new cluster
-                cluster_id = await create_cluster(
-                    session,
-                    name=f"cluster_{int(time.time())}_{i}",
-                    centroid_vector=None,  # Will be set below
-                    created_at=datetime.now(timezone.utc)
-                )
-                
-                if cluster_id:
-                    # Add item to new cluster
-                    await add_item_to_cluster(session, cluster_id, item['id'])
-                    
-                    # Set centroid
-                    import json
-                    centroid_json = json.dumps(embedding.tolist())
-                    await update_cluster_centroid(session, cluster_id, centroid_json)
-                    
-                    existing_centroids[cluster_id] = embedding
-                    clusters_created += 1
-                    items_clustered += 1
-                
-        except Exception as e:
-            logger.error(f"Error processing item {item.get('id', 'unknown')}: {e}")
-    
-    return {
-        'clusters_created': clusters_created,
-        'clusters_updated': clusters_updated,
-        'items_clustered': items_clustered
-    }
-
-
-async def _full_clustering(session: AsyncSession,
-                         items: List[Dict[str, Any]],
-                         embeddings: np.ndarray,
-                         clusterer: IncrementalClusterer) -> Dict[str, Any]:
-    """Perform full clustering from scratch."""
-    
-    # Perform clustering
-    if clusterer.method == "dbscan":
-        labels = clusterer.cluster_dbscan(embeddings)
-    else:
-        labels = clusterer.cluster_kmeans(embeddings)
-    
-    clusters_created = 0
-    items_clustered = 0
-    
-    # Group items by cluster
-    cluster_groups = {}
-    for i, label in enumerate(labels):
-        if label >= 0:  # Skip noise points (-1)
-            if label not in cluster_groups:
-                cluster_groups[label] = []
-            cluster_groups[label].append((items[i], embeddings[i]))
-    
-    # Create clusters in database
-    for cluster_label, cluster_items in cluster_groups.items():
-        if len(cluster_items) < MIN_CLUSTER_SIZE:
-            continue
-        
-        try:
-            # Calculate centroid
-            cluster_embeddings = [emb for _, emb in cluster_items]
-            centroid = clusterer.calculate_centroid(np.array(cluster_embeddings))
-            
-            # Create cluster
-            cluster_id = await create_cluster(
-                session,
-                name=f"cluster_{cluster_label}_{int(time.time())}",
-                centroid_vector=None,
-                created_at=datetime.now(timezone.utc)
-            )
+                cluster_id = result.inserted_primary_key[0]
             
             if cluster_id:
-                # Add items to cluster
-                for item, _ in cluster_items:
-                    await add_item_to_cluster(session, cluster_id, item['id'])
-                    items_clustered += 1
+                # Add to in-memory cache
+                cluster_info = ClusterInfo(
+                    id=cluster_id,
+                    centroid=embedding / np.linalg.norm(embedding),  # Normalize
+                    first_seen=item['published_at'] or item['fetched_at'],
+                    last_seen=item['published_at'] or item['fetched_at'],
+                    items_count=0,
+                    domains_count=1 if domain != "unknown" else 0,
+                    domains={domain: 1} if domain != "unknown" else {}
+                )
                 
-                # Set centroid
-                import json
-                centroid_json = json.dumps(centroid.tolist())
-                await update_cluster_centroid(session, cluster_id, centroid_json)
+                self.clusters[cluster_id] = cluster_info
                 
-                clusters_created += 1
+                return cluster_id
                 
         except Exception as e:
-            logger.error(f"Error creating cluster {cluster_label}: {e}")
+            logger.error(f"Error creating new cluster for item {item['id']}: {e}")
+            return None
+    
+    async def _add_item_to_cluster(self, cluster_id: int, item: Dict[str, Any], similarity: float):
+        """Add an item to a cluster."""
+        try:
+            # Add to database
+            async with AsyncSessionLocal() as session:
+                domain = self._extract_domain(item['url'])
+                
+                from newsbot.core.models import ClusterItem
+                from sqlalchemy import insert
+                
+                cluster_item_data = {
+                    'cluster_id': cluster_id,
+                    'raw_item_id': item['id'],
+                    'source_domain': domain,
+                    'similarity': similarity,
+                    'created_at': datetime.now(timezone.utc)
+                }
+                
+                stmt = insert(ClusterItem).values(**cluster_item_data)
+                await session.execute(stmt)
+                await session.commit()
+                
+                if cluster_id in self.clusters:
+                    # Update in-memory cluster info
+                    cluster_info = self.clusters[cluster_id]
+                    cluster_info.items_count += 1
+                    cluster_info.last_seen = max(
+                        cluster_info.last_seen,
+                        item['published_at'] or item['fetched_at']
+                    )
+                    
+                    # Update domain counts
+                    if domain != "unknown":
+                        if domain in cluster_info.domains:
+                            cluster_info.domains[domain] += 1
+                        else:
+                            cluster_info.domains[domain] = 1
+                            cluster_info.domains_count += 1
+                
+        except Exception as e:
+            logger.error(f"Error adding item {item['id']} to cluster {cluster_id}: {e}")
+    
+    async def _persist_cluster_centroids(self):
+        """Persist updated cluster centroids to database."""
+        async with AsyncSessionLocal() as session:
+            for cluster_id, cluster_info in self.clusters.items():
+                try:
+                    from newsbot.core.models import Cluster
+                    from sqlalchemy import update
+                    
+                    stmt = update(Cluster).where(
+                        Cluster.id == cluster_id
+                    ).values(
+                        centroid=cluster_info.centroid.tolist(),
+                        items_count=cluster_info.items_count,
+                        domains_count=cluster_info.domains_count,
+                        domains=cluster_info.domains,
+                        last_seen=cluster_info.last_seen
+                    )
+                    
+                    await session.execute(stmt)
+                    await session.commit()
+                    
+                except Exception as e:
+                    logger.error(f"Error persisting centroid for cluster {cluster_id}: {e}")
+    
+    def get_cluster_ids(self) -> List[int]:
+        """Get list of all cluster IDs."""
+        return list(self.clusters.keys())
+    
+    def get_cluster_info(self, cluster_id: int) -> Optional[ClusterInfo]:
+        """Get information about a specific cluster."""
+        return self.clusters.get(cluster_id)
+
+
+# Main clustering function for external use
+async def cluster_recent_items(window_hours: int = 24, 
+                             similarity_threshold: float = None) -> Dict[str, Any]:
+    """
+    Cluster recent raw items and return results.
+    
+    Args:
+        window_hours: How many hours back to look for items
+        similarity_threshold: Cosine similarity threshold for clustering
+        
+    Returns:
+        Dictionary with clustering results and statistics
+    """
+    clusterer = IncrementalClusterer(similarity_threshold=similarity_threshold)
+    stats = await clusterer.cluster_recent_items(window_hours)
     
     return {
-        'clusters_created': clusters_created,
-        'clusters_updated': 0,
-        'items_clustered': items_clustered
+        "cluster_ids": clusterer.get_cluster_ids(),
+        "stats": {
+            "total_items": stats.total_items,
+            "new_clusters": stats.new_clusters,
+            "existing_clusters": stats.existing_clusters,
+            "items_clustered": stats.items_clustered,
+            "processing_time": stats.processing_time
+        }
     }
 
 
-async def run_clustering_pipeline(window_hours: int = DEFAULT_WINDOW_HOURS,
-                                incremental: bool = True) -> Dict[str, Any]:
-    """
-    Run complete clustering pipeline.
+if __name__ == "__main__":
+    import asyncio
     
-    Args:
-        window_hours: Ventana de tiempo para contenido
-        incremental: Si usar clustering incremental
+    async def main():
+        """Test clustering with recent items."""
+        print("Starting clustering test...")
         
-    Returns:
-        Estadísticas del clustering
-    """
-    async with AsyncSessionLocal() as session:
-        return await cluster_recent_content(
-            session,
-            window_hours=window_hours,
-            incremental=incremental
-        )
+        result = await cluster_recent_items(window_hours=24)
+        
+        print(f"Clustering results:")
+        print(f"  - Total clusters: {len(result['cluster_ids'])}")
+        print(f"  - Stats: {result['stats']}")
+        
+        for cluster_id in result['cluster_ids'][:5]:  # Show first 5
+            print(f"  - Cluster {cluster_id}")
+    
+    asyncio.run(main())
