@@ -985,3 +985,207 @@ async def update_topic_last_run(session: AsyncSession, topic_id: int) -> bool:
         logger.error(f"Error updating last run for topic {topic_id}: {e}")
         await session.rollback()
         return False
+
+
+# ==========================================
+# QUICK READ FUNCTIONS FOR TRENDER PIPELINE
+# ==========================================
+
+async def get_recent_raw_items(session: AsyncSession, window_hours: int) -> List[RawItem]:
+    """
+    Get recent raw items for trending analysis.
+    
+    Args:
+        session: Database session
+        window_hours: Number of hours back to look for items
+        
+    Returns:
+        List of RawItem objects
+    """
+    try:
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+        
+        stmt = (
+            select(RawItem)
+            .where(RawItem.fetched_at >= cutoff_time)
+            .order_by(desc(RawItem.fetched_at))
+        )
+        
+        result = await session.execute(stmt)
+        raw_items = result.scalars().all()
+        
+        logger.debug(f"Retrieved {len(raw_items)} recent items from last {window_hours} hours")
+        return list(raw_items)
+        
+    except Exception as e:
+        logger.error(f"Error retrieving recent raw items: {e}")
+        return []
+
+
+async def get_recent_raw_items_for_topic(session: AsyncSession, topic_key: str, window_hours: int) -> List[RawItem]:
+    """
+    Get recent raw items filtered by topic for caching matches.
+    
+    This function can be used to cache topic matches rather than 
+    recomputing them each time during analysis.
+    
+    Args:
+        session: Database session
+        topic_key: Topic key to filter by
+        window_hours: Number of hours back to look for items
+        
+    Returns:
+        List of RawItem objects that match the topic
+    """
+    try:
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+        
+        # For now, we'll return all recent items and let the caller filter
+        # In the future, this could join with a topic_matches table for caching
+        stmt = (
+            select(RawItem)
+            .where(RawItem.fetched_at >= cutoff_time)
+            .order_by(desc(RawItem.fetched_at))
+        )
+        
+        result = await session.execute(stmt)
+        raw_items = result.scalars().all()
+        
+        logger.debug(f"Retrieved {len(raw_items)} recent items for topic '{topic_key}' from last {window_hours} hours")
+        return list(raw_items)
+        
+    except Exception as e:
+        logger.error(f"Error retrieving recent raw items for topic '{topic_key}': {e}")
+        return []
+
+
+async def upsert_cluster(session: AsyncSession, data: Dict[str, Any]) -> Optional[Cluster]:
+    """
+    Insert or update a cluster with the given data.
+    
+    Args:
+        session: Database session
+        data: Dictionary with cluster data containing:
+            - centroid: Optional[List[float]] - embedding vector
+            - topic_key: Optional[str] - topic key if topic-specific
+            - first_seen: Optional[datetime] - when first seen
+            - last_seen: Optional[datetime] - when last seen
+            - items_count: Optional[int] - number of items
+            - domains_count: Optional[int] - number of unique domains
+            - domains: Optional[Dict] - domain counts
+            - score_trend: Optional[float] - trending score
+            - score_fresh: Optional[float] - freshness score
+            - score_diversity: Optional[float] - diversity score
+            - score_total: Optional[float] - total score
+            - status: Optional[str] - cluster status
+            
+    Returns:
+        Cluster object if successful, None otherwise
+    """
+    try:
+        now = datetime.now(timezone.utc)
+        
+        # Prepare cluster data with defaults
+        cluster_data = {
+            'centroid': data.get('centroid'),
+            'topic_key': data.get('topic_key'),
+            'first_seen': data.get('first_seen', now),
+            'last_seen': data.get('last_seen', now),
+            'items_count': data.get('items_count', 0),
+            'domains_count': data.get('domains_count', 0),
+            'domains': data.get('domains', {}),
+            'score_trend': data.get('score_trend', 0.0),
+            'score_fresh': data.get('score_fresh', 0.0),
+            'score_diversity': data.get('score_diversity', 0.0),
+            'score_total': data.get('score_total', 0.0),
+            'status': data.get('status', 'open')
+        }
+        
+        # Check if we have an ID to update existing cluster
+        cluster_id = data.get('id')
+        
+        if cluster_id:
+            # Update existing cluster
+            stmt = (
+                update(Cluster)
+                .where(Cluster.id == cluster_id)
+                .values(**cluster_data)
+            )
+            
+            await session.execute(stmt)
+            await session.commit()
+            
+            # Fetch the updated cluster
+            result = await session.execute(select(Cluster).where(Cluster.id == cluster_id))
+            cluster = result.scalar_one_or_none()
+            
+            if cluster:
+                logger.debug(f"Updated cluster {cluster_id}")
+                return cluster
+            else:
+                logger.warning(f"Cluster {cluster_id} not found for update")
+                return None
+        
+        else:
+            # Create new cluster
+            cluster = Cluster(**cluster_data)
+            session.add(cluster)
+            await session.commit()
+            await session.refresh(cluster)
+            
+            logger.debug(f"Created new cluster {cluster.id}")
+            return cluster
+            
+    except Exception as e:
+        logger.error(f"Error upserting cluster: {e}")
+        await session.rollback()
+        return None
+
+
+async def attach_item_to_cluster(session: AsyncSession, cluster_id: int, raw_item_id: int, 
+                                similarity: float, domain: str) -> bool:
+    """
+    Attach a raw item to a cluster with similarity score and domain information.
+    
+    Args:
+        session: Database session
+        cluster_id: Cluster ID to attach item to
+        raw_item_id: Raw item ID to attach
+        similarity: Similarity score between item and cluster (0.0-1.0)
+        domain: Source domain of the item
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        now = datetime.now(timezone.utc)
+        
+        # Use upsert to handle duplicates
+        stmt = pg_insert(ClusterItem).values(
+            cluster_id=cluster_id,
+            raw_item_id=raw_item_id,
+            source_domain=domain,
+            similarity=similarity,
+            created_at=now
+        )
+        
+        # On conflict, update the similarity score and timestamp
+        stmt = stmt.on_conflict_do_update(
+            index_elements=['cluster_id', 'raw_item_id'],
+            set_={
+                'source_domain': stmt.excluded.source_domain,
+                'similarity': stmt.excluded.similarity,
+                'created_at': stmt.excluded.created_at
+            }
+        )
+        
+        await session.execute(stmt)
+        await session.commit()
+        
+        logger.debug(f"Attached item {raw_item_id} to cluster {cluster_id} with similarity {similarity:.3f}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error attaching item {raw_item_id} to cluster {cluster_id}: {e}")
+        await session.rollback()
+        return False

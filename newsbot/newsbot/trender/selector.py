@@ -6,6 +6,9 @@ Implementa selección inteligente de las mejores tendencias:
 - Diversidad en la selección (evitar saturación de un solo tema)
 - Filtros de calidad y relevancia
 - Ranking final con adjustes contextuales
+
+NOTA: Para las políticas de selección específicas implementadas según los requerimientos
+del sistema (global trending, per-topic, duplicate avoidance), ver selector_final.py
 """
 
 import asyncio

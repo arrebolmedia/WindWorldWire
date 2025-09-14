@@ -1,0 +1,48 @@
+# Article Rewriter System Requirements
+
+# Core web framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Data validation and models
+pydantic>=2.5.0
+
+# HTTP client and utilities
+httpx>=0.25.0
+requests>=2.31.0
+
+# HTML processing and sanitization
+bleach>=6.1.0
+html5lib>=1.1
+
+# Text processing
+unidecode>=1.3.7
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+
+# Optional dependencies for enhanced functionality
+# Uncomment these for production deployment:
+
+# Real LLM providers (choose one):
+# openai>=1.3.0                    # For OpenAI GPT models
+# anthropic>=0.8.0                 # For Claude models  
+# transformers>=4.35.0             # For local Hugging Face models
+# langchain>=0.1.0                 # For LangChain integration
+
+# Advanced HTML processing:
+# lxml>=4.9.0                      # For faster XML/HTML parsing
+# beautifulsoup4>=4.12.0           # For HTML parsing and manipulation
+
+# Production monitoring:
+# prometheus-client>=0.19.0        # For metrics collection
+# sentry-sdk[fastapi]>=1.38.0      # For error tracking
+
+# Database support (if needed):
+# sqlalchemy>=2.0.0                # For database ORM
+# alembic>=1.13.0                  # For database migrations
+
+# Caching (if needed):
+# redis>=5.0.0                     # For Redis caching
+# python-memcached>=1.59           # For Memcached support

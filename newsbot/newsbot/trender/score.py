@@ -16,6 +16,260 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
+import numpy as np
+from collections import defaultdict, deque
+import redis
+import json
+import os
+
+from newsbot.core.db import AsyncSessionLocal
+from newsbot.core.logging import get_logger
+from newsbot.core.repositories import (
+    get_cluster_with_items,
+    get_cluster_stats,
+    update_cluster_score
+)
+
+logger = get_logger(__name__)
+
+# Scoring configuration
+VIRAL_WEIGHT = 0.25
+FRESHNESS_WEIGHT = 0.20
+DIVERSITY_WEIGHT = 0.20
+VOLUME_WEIGHT = 0.15
+QUALITY_WEIGHT = 0.20
+
+# Thresholds and parameters
+MIN_ITEMS_FOR_SCORING = 3
+MAX_HOURS_FOR_FRESHNESS = 48
+DIVERSITY_SOURCE_WEIGHT = 0.6
+DIVERSITY_DOMAIN_WEIGHT = 0.4
+
+# --- Historical Metrics Cache ---
+class HistoricalMetricsCache:
+    """Cache para métricas históricas de clusters usando Redis."""
+    
+    def __init__(self, redis_url=None):
+        """Inicializa el cache de métricas históricas."""
+        redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        try:
+            self.redis = redis.from_url(redis_url, decode_responses=True)
+            self.redis.ping()
+            logger.info("Connected to Redis for historical metrics")
+        except Exception as e:
+            logger.warning(f"Redis not available, using in-memory cache: {e}")
+            self.redis = None
+            self._memory_cache = defaultdict(deque)
+    
+    def _get_key(self, cluster_id: int) -> str:
+        """Genera la key de Redis para un cluster."""
+        return f"cluster_history:{cluster_id}"
+    
+    def add_count(self, cluster_id: int, items_count: int, max_history=30):
+        """Agrega un count histórico para un cluster."""
+        if self.redis:
+            key = self._get_key(cluster_id)
+            # Agrega al final de la lista
+            self.redis.rpush(key, items_count)
+            # Mantiene solo los últimos max_history valores
+            self.redis.ltrim(key, -max_history, -1)
+            # TTL de 30 días
+            self.redis.expire(key, 30 * 24 * 3600)
+        else:
+            # Cache en memoria
+            history = self._memory_cache[cluster_id]
+            history.append(items_count)
+            if len(history) > max_history:
+                history.popleft()
+    
+    def get_history(self, cluster_id: int) -> List[int]:
+        """Obtiene el historial de counts para un cluster."""
+        if self.redis:
+            key = self._get_key(cluster_id)
+            history = self.redis.lrange(key, 0, -1)
+            return [int(x) for x in history]
+        else:
+            return list(self._memory_cache.get(cluster_id, []))
+    
+    def get_histories(self, cluster_ids: List[int]) -> Dict[int, List[int]]:
+        """Obtiene historiales para múltiples clusters."""
+        return {cid: self.get_history(cid) for cid in cluster_ids}
+
+# Instancia global del cache
+_metrics_cache = None
+
+def get_metrics_cache():
+    """Obtiene o crea la instancia del cache de métricas."""
+    global _metrics_cache
+    if _metrics_cache is None:
+        _metrics_cache = HistoricalMetricsCache()
+    return _metrics_cache
+
+# --- Cluster Scoring Functions ---
+def trend_spike_score(cluster, historic_counts=None, window=7):
+    """
+    Z-score de items_count vs media móvil 7 días (o media simple si no hay historia).
+    Si no hay historia, trend=1.0 si items_count >= 2.
+    """
+    items_count = cluster.get('items_count', 0)
+    if not historic_counts or len(historic_counts) < window:
+        return 1.0 if items_count >= 2 else 0.0
+    arr = np.array(historic_counts[-window:])
+    mean = arr.mean()
+    std = arr.std() if arr.std() > 0 else 1.0
+    z = (items_count - mean) / std
+    # Normaliza z-score a [0,1] usando sigmoid
+    score = float(1 / (1 + np.exp(-z)))
+    return score
+
+def gini(array):
+    """Calcula el coeficiente de Gini para una lista de valores."""
+    arr = np.array(array, dtype=float)  # Forzar tipo float
+    if arr.sum() == 0:
+        return 0.0
+    arr = arr.flatten()
+    if np.amin(arr) < 0:
+        arr -= np.amin(arr)
+    arr += 0.0000001
+    arr = np.sort(arr)
+    index = np.arange(1, arr.shape[0]+1)
+    n = arr.shape[0]
+    return float((np.sum((2 * index - n - 1) * arr)) / (n * np.sum(arr)))
+
+def domain_diversity_score(cluster):
+    """
+    1 - Gini(domains distribution).
+    """
+    domains = cluster.get('domains', {})
+    counts = list(domains.values())
+    if not counts:
+        return 0.0
+    g = gini(counts)
+    return 1.0 - g
+
+def freshness_score(cluster, now=None, tau_hours=3.0):
+    """
+    exp(-Δt / τ) con τ configurable (default 3h).
+    Δt = edad promedio de los items en horas.
+    """
+    now = now or datetime.now(timezone.utc)
+    items = cluster.get('items', [])
+    if not items:
+        return 0.0
+    ages = []
+    for item in items:
+        pub_time = item.get('published_at', now)
+        if isinstance(pub_time, str):
+            try:
+                pub_time = datetime.fromisoformat(pub_time.replace('Z', '+00:00'))
+            except:
+                pub_time = now
+        age = (now - pub_time).total_seconds() / 3600
+        ages.append(max(0, age))
+    avg_age = sum(ages) / len(ages) if ages else 0.0
+    score = math.exp(-avg_age / tau_hours)
+    return score
+
+def total_score(trend, diversity, freshness):
+    """
+    0.45*trend + 0.35*diversity + 0.20*freshness
+    """
+    return 0.45*trend + 0.35*diversity + 0.20*freshness
+
+def persist_cluster_scores(cluster, trend, diversity, freshness, total):
+    """
+    Guarda los scores en el dict del cluster.
+    """
+    cluster['score_trend'] = trend
+    cluster['score_diversity'] = diversity
+    cluster['score_freshness'] = freshness
+    cluster['score_total'] = total
+
+def rank_clusters(clusters, k=10):
+    """
+    Retorna los top k clusters abiertos ordenados por score_total.
+    """
+    open_clusters = [c for c in clusters if c.get('status') == 'open']
+    sorted_clusters = sorted(open_clusters, key=lambda c: c.get('score_total', 0), reverse=True)
+    return sorted_clusters[:k]
+
+# --- Ejemplo de integración ---
+def score_and_rank_clusters(clusters, historic_counts_map=None, now=None, tau_hours=3.0, k=10):
+    """
+    Calcula y persiste scores en clusters, retorna top k.
+    historic_counts_map: dict cluster_id -> list of historic counts
+    """
+    now = now or datetime.now(timezone.utc)
+    
+    # Si no se proporciona historic_counts_map, usa el cache
+    if historic_counts_map is None:
+        cache = get_metrics_cache()
+        cluster_ids = [c.get('id') for c in clusters if c.get('id')]
+        historic_counts_map = cache.get_histories(cluster_ids)
+    
+    for cluster in clusters:
+        cluster_id = cluster.get('id')
+        
+        # Actualiza el cache con el count actual
+        current_count = cluster.get('items_count', 0)
+        if cluster_id and current_count > 0:
+            cache = get_metrics_cache()
+            cache.add_count(cluster_id, current_count)
+        
+        # Calcula scores
+        historic_counts = historic_counts_map.get(cluster_id) if historic_counts_map else None
+        trend = trend_spike_score(cluster, historic_counts)
+        diversity = domain_diversity_score(cluster)
+        freshness = freshness_score(cluster, now, tau_hours)
+        total = total_score(trend, diversity, freshness)
+        persist_cluster_scores(cluster, trend, diversity, freshness, total)
+    
+    return rank_clusters(clusters, k)
+
+# --- Database Integration ---
+async def update_cluster_scores_in_db(session: AsyncSession, clusters: List[Dict]):
+    """Actualiza los scores de clusters en la base de datos."""
+    from newsbot.core.models import Cluster
+    from sqlalchemy import update
+    
+    for cluster in clusters:
+        cluster_id = cluster.get('id')
+        if not cluster_id:
+            continue
+        
+        score_data = {
+            'score_trend': cluster.get('score_trend'),
+            'score_diversity': cluster.get('score_diversity'), 
+            'score_freshness': cluster.get('score_freshness'),
+            'score_total': cluster.get('score_total')
+        }
+        
+        # Actualiza solo los campos de score que no son None
+        update_data = {k: v for k, v in score_data.items() if v is not None}
+        
+        if update_data:
+            stmt = update(Cluster).where(Cluster.id == cluster_id).values(**update_data)
+            await session.execute(stmt)
+    
+    await session.commit()
+"""Sistema de scoring para trending topics.
+
+Implementa métricas compuestas para evaluar y ranking de clusters/topics:
+- Viral score: velocidad de crecimiento y engagement
+- Freshness score: qué tan reciente es el contenido
+- Diversity score: variedad de fuentes y perspectivas
+- Volume score: cantidad de contenido relacionado
+- Quality score: métricas de calidad del contenido
+- Composite score: puntuación final ponderada
+"""
+
+import asyncio
+import time
+import math
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Any, Optional, Tuple
+from dataclasses import dataclass
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsbot.core.db import AsyncSessionLocal
 from newsbot.core.logging import get_logger

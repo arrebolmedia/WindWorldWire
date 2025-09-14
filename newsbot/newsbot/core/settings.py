@@ -46,6 +46,7 @@ class Settings(BaseSettings):
         """Pydantic config."""
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"  # Permite campos extra del .env que no están en el modelo
 
 
 @lru_cache()
